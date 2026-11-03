@@ -81,13 +81,17 @@ async function getAlerts(lat, lon) {
     httpErrors: 0,
     fetchErrors: 0,
     parseErrors: 0,
+    stoppedAfterRateLimit: false,
     errors: [],
   };
   const addError = (kind, detail) => {
     if (diagnostics.errors.length < 8) diagnostics.errors.push({ kind, detail: String(detail).slice(0, 220) });
   };
   const feedResponse = await fetch(CAP_FEED, {
-    headers: { 'User-Agent': 'ClimaGo/1.0' },
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; ClimaGo/1.0; +https://climago.app)',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
     signal: AbortSignal.timeout(15000),
   });
   diagnostics.feedHttpStatus = feedResponse.status;
@@ -96,52 +100,61 @@ async function getAlerts(lat, lon) {
   const feed = await feedResponse.text();
   diagnostics.feedBytes = new TextEncoder().encode(feed).length;
 
-  // La página CAP del SMN publica enlaces XML; se cuentan antes de limitar el lote.
-  const candidates = [...feed.matchAll(/https?:[^\s"'<>]+?\.xml(?:\?[^\s"'<>]*)?/gi)]
+  const candidates = [...feed.matchAll(/https?:[^\\s"'<>]+?\\.xml(?:\\?[^\\s"'<>]*)?/gi)]
     .map(m => decodeXml(m[0]).replace(/&amp;/g, '&'));
-  const urls = [...new Set(candidates)].filter(u => /smn\.gob\.ar/i.test(u));
+  const urls = [...new Set(candidates)].filter(u => /smn\\.gob\\.ar/i.test(u));
   diagnostics.candidateUrlsFound = urls.length;
-  const selectedUrls = urls.slice(0, 60);
-  const results = [];
 
-  for (let i = 0; i < selectedUrls.length; i += 6) {
-    const batch = await Promise.all(selectedUrls.slice(i, i + 6).map(async url => {
-      diagnostics.documentsAttempted++;
-      try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
-        if (!response.ok) {
-          diagnostics.httpErrors++;
-          addError('http', `HTTP ${response.status} al descargar un aviso CAP`);
-          return [];
-        }
-        diagnostics.documentsDownloaded++;
-        const xml = await response.text();
-        const infoBlocks = blocks(xml, 'info');
-        if (!infoBlocks.length) {
-          diagnostics.documentsWithoutInfoBlocks++;
-          addError('sin-info', `Documento descargado sin bloques <info>; content-type: ${response.headers.get('content-type') || 'desconocido'}; inicio: ${xml.slice(0, 100)}`);
-          return [];
-        }
-        diagnostics.documentsWithInfoBlocks++;
-        const parsed = parseCap(xml, lat, lon);
-        if (!parsed.length || parsed.some(item => !item.identifier)) {
-          diagnostics.parseErrors++;
-          addError('parseo', 'El documento contiene <info>, pero no se pudo extraer su identificador CAP.');
-          return [];
-        }
-        diagnostics.documentsParsed++;
-        return parsed;
-      } catch (error) {
-        diagnostics.fetchErrors++;
-        addError('fetch', error?.message || error);
-        return [];
+  // Consultar un lote pequeño y secuencial para no disparar el límite del SMN.
+  const selectedUrls = urls.slice(0, 12);
+  const results = [];
+  for (const url of selectedUrls) {
+    diagnostics.documentsAttempted++;
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; ClimaGo/1.0; +https://climago.app)',
+          'Accept': 'application/cap+xml, application/xml, text/xml, */*',
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (response.status === 429) {
+        diagnostics.httpErrors++;
+        diagnostics.stoppedAfterRateLimit = true;
+        const retryAfter = response.headers.get('retry-after');
+        addError('http-429', `El SMN limitó las descargas (HTTP 429)${retryAfter ? `; Retry-After: ${retryAfter}` : ''}. Se detuvo el lote para no insistir.`);
+        break;
       }
-    }));
-    results.push(...batch);
+      if (!response.ok) {
+        diagnostics.httpErrors++;
+        addError('http', `HTTP ${response.status} al descargar un aviso CAP`);
+        continue;
+      }
+      diagnostics.documentsDownloaded++;
+      const xml = await response.text();
+      const infoBlocks = blocks(xml, 'info');
+      if (!infoBlocks.length) {
+        diagnostics.documentsWithoutInfoBlocks++;
+        addError('sin-info', `Documento descargado sin bloques <info>; content-type: ${response.headers.get('content-type') || 'desconocido'}; inicio: ${xml.slice(0, 100)}`);
+        continue;
+      }
+      diagnostics.documentsWithInfoBlocks++;
+      const parsed = parseCap(xml, lat, lon);
+      if (!parsed.length || parsed.some(item => !item.identifier)) {
+        diagnostics.parseErrors++;
+        addError('parseo', 'El documento contiene <info>, pero no se pudo extraer su identificador CAP.');
+        continue;
+      }
+      diagnostics.documentsParsed++;
+      results.push(...parsed);
+    } catch (error) {
+      diagnostics.fetchErrors++;
+      addError('fetch', error?.message || error);
+    }
   }
 
   const now = Date.now();
-  const active = results.flat().filter(a =>
+  const active = results.filter(a =>
     a.identifier &&
     (!a.expires || Date.parse(a.expires) >= now) &&
     a.status.toLowerCase() !== 'cancel'
