@@ -2,6 +2,10 @@
 
 Worker de consulta para avisos oficiales del Servicio Meteorológico Nacional argentino (SMN), basado en el estándar CAP.
 
+## Despliegue de diagnóstico en Cloudflare
+
+El proyecto independiente de Cloudflare `climago-smn-diagnostico` está vinculado exclusivamente a la rama `diagnostico-alertas-smn-2026-11-03`. Los commits en esta rama inician sus compilaciones y despliegues; `main` permanece reservada para el Worker principal.
+
 ## Prueba acotada de conectividad SMN
 
 Después de desplegar esta rama en Cloudflare Workers, abrir:
