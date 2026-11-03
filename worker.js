@@ -342,15 +342,38 @@ async function probeSmnJson() {
         signal: AbortSignal.timeout(10000),
       });
       const body = await response.text();
-      results.push({
+      const result = {
         name: target.name,
         httpStatus: response.status,
         ok: response.ok,
         contentType: response.headers.get('content-type') || '',
         bytes: new TextEncoder().encode(body).length,
         retryAfter: response.headers.get('retry-after') || null,
-        sample: body.slice(0, 600),
-      });
+      };
+      if (target.name === 'shortterm_global' && response.ok) {
+        try {
+          const payload = JSON.parse(body);
+          const items = Array.isArray(payload) ? payload : (Array.isArray(payload?.data) ? payload.data : []);
+          result.itemCount = items.length;
+          result.topLevelKeys = Array.isArray(payload) ? null : Object.keys(payload || {});
+          result.items = items.slice(0, 20).map(item => ({
+            id: item.id ?? item.identifier ?? null,
+            title: item.title ?? item.headline ?? null,
+            date: item.date ?? item.sent ?? item.sent_at ?? null,
+            endDate: item.end_date ?? item.expires ?? item.expiration ?? null,
+            zones: item.zones ?? item.areaDesc ?? item.areas ?? null,
+            severity: item.severity ?? item.level ?? null,
+            geometry: item.geometry ?? item.polygon ?? null,
+            images: item.images ?? null,
+          }));
+        } catch {
+          result.parseError = 'La respuesta HTTP fue exitosa, pero no se pudo interpretar como JSON.';
+          result.sample = body.slice(0, 600);
+        }
+      } else {
+        result.sample = body.slice(0, 600);
+      }
+      results.push(result);
     } catch (error) {
       results.push({ name: target.name, error: String(error?.message || error) });
     }
