@@ -67,6 +67,37 @@ function parseCap(xml, lat, lon) {
   }
   return out;
 }
+async function fetchCachedSmn(url, headers, ttlSeconds, timeoutMs) {
+  // La prueba smn-probe no usa esta función: siempre consulta al SMN en tiempo real.
+  // Cache API reduce descargas repetidas del mismo índice/documento en cada PoP.
+  const request = new Request(url, { method: 'GET' });
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
+  if (cache) {
+    try {
+      const cached = await cache.match(request);
+      if (cached) return { response: cached, cacheHit: true };
+    } catch {
+      // Si Cache API no está disponible en preview, continuar con la consulta directa.
+    }
+  }
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+  if (response.ok && cache) {
+    try {
+      const cacheHeaders = new Headers(response.headers);
+      cacheHeaders.set('Cache-Control', 'public, max-age=' + ttlSeconds);
+      const cacheable = new Response(response.clone().body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: cacheHeaders,
+      });
+      await cache.put(request, cacheable);
+    } catch {
+      // La consulta sigue siendo válida aunque no se pueda guardar en caché.
+    }
+  }
+  return { response, cacheHit: false };
+}
+
 async function getAlerts(lat, lon) {
   const diagnostics = {
     feedHttpStatus: null,
@@ -82,18 +113,19 @@ async function getAlerts(lat, lon) {
     fetchErrors: 0,
     parseErrors: 0,
     stoppedAfterRateLimit: false,
+    feedCacheHit: false,
+    documentsCacheHits: 0,
     errors: [],
   };
   const addError = (kind, detail) => {
     if (diagnostics.errors.length < 8) diagnostics.errors.push({ kind, detail: String(detail).slice(0, 220) });
   };
-  const feedResponse = await fetch(CAP_FEED, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; ClimaGo/1.0; +https://climago.app)',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    },
-    signal: AbortSignal.timeout(15000),
-  });
+  const feedResult = await fetchCachedSmn(CAP_FEED, {
+    'User-Agent': 'Mozilla/5.0 (compatible; ClimaGo/1.0)',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  }, 120, 15000);
+  const feedResponse = feedResult.response;
+  diagnostics.feedCacheHit = feedResult.cacheHit;
   diagnostics.feedHttpStatus = feedResponse.status;
   diagnostics.feedContentType = feedResponse.headers.get('content-type') || '';
   if (!feedResponse.ok) throw new Error(`El feed CAP del SMN respondió HTTP ${feedResponse.status}`);
@@ -109,13 +141,12 @@ async function getAlerts(lat, lon) {
   for (const url of selectedUrls) {
     diagnostics.documentsAttempted++;
     try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; ClimaGo/1.0; +https://climago.app)',
-          'Accept': 'application/cap+xml, application/xml, text/xml, */*',
-        },
-        signal: AbortSignal.timeout(10000),
-      });
+      const capResult = await fetchCachedSmn(url, {
+        'User-Agent': 'Mozilla/5.0 (compatible; ClimaGo/1.0)',
+        'Accept': 'application/cap+xml, application/xml, text/xml, */*',
+      }, 300, 10000);
+      const response = capResult.response;
+      if (capResult.cacheHit) diagnostics.documentsCacheHits++;
       if (response.status === 429) {
         diagnostics.httpErrors++;
         diagnostics.stoppedAfterRateLimit = true;
