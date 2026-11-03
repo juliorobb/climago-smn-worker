@@ -6,4 +6,5 @@ compatibility_date = "2026-11-02"
 # Si más adelante se habilita Rainbow, RAINBOW_API_KEY debe configurarse
 # como Secret desde el panel de Cloudflare, nunca dentro de este archivo.
 
+# Required by Cloudflare's npx wrangler preview command.
 [previews]
