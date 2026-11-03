@@ -28,7 +28,7 @@ La prueba usa Córdoba como ubicación de comprobación. Se puede indicar otra u
 
 `?resource=alerts&lat=-31.4&lon=-64.2`
 
-La consulta de alertas de esta rama limita el procesamiento a un máximo de 12 documentos CAP por solicitud y los descarga de manera secuencial. Se detiene al primer HTTP 429.
+La consulta de alertas de esta rama limita el procesamiento a un máximo de 12 documentos CAP por solicitud y los descarga de manera secuencial. Se detiene al primer HTTP 429. El índice del feed se guarda en la caché interna del Worker durante 120 segundos y cada XML CAP correcto durante 300 segundos; así, las consultas repetidas no vuelven a pedir los mismos archivos al SMN en el mismo punto de presencia. La ruta de diagnóstico `smn-probe` evita deliberadamente esa caché para comprobar la respuesta real.
 
 Los resultados incluyen `dataStatus` y `coverageComplete`:
 - `ok`: se procesaron todos los documentos encontrados.
