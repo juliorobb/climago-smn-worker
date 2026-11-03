@@ -153,8 +153,10 @@ async function getAlerts(lat, lon) {
   const urls = extractCapUrls(feed);
   diagnostics.candidateUrlsFound = urls.length;
 
-  // Consultar un lote pequeño y secuencial para no disparar el límite del SMN.
-  const selectedUrls = urls.slice(0, 12);
+  // Lote conservador: el SMN respondió HTTP 429 después de 8 descargas consecutivas.
+  // Consultamos como máximo 8 documentos por ciclo y los conservamos 15 minutos en Cache API.
+  // Así evitamos repetir descargas en cada actualización de la app (que consulta cada 5 minutos).
+  const selectedUrls = urls.slice(0, 8);
   const results = [];
   for (const url of selectedUrls) {
     diagnostics.documentsAttempted++;
@@ -162,7 +164,7 @@ async function getAlerts(lat, lon) {
       const capResult = await fetchCachedSmn(url, {
         'User-Agent': 'Mozilla/5.0 (compatible; ClimaGo/1.0)',
         'Accept': 'application/cap+xml, application/xml, text/xml, */*',
-      }, 300, 10000);
+      }, 900, 10000);
       const response = capResult.response;
       if (capResult.cacheHit) diagnostics.documentsCacheHits++;
       if (response.status === 429) {
@@ -228,7 +230,7 @@ async function getAlerts(lat, lon) {
     activeForLocation,
     diagnostics,
     note: coverageComplete ? 'Se procesaron todos los documentos localizados en el feed.' :
-      'La consulta no cubrió todos los documentos del feed. Una lista vacía o parcial no significa que no existan alertas.',
+      'Se consultó un lote limitado para respetar el límite de descargas del SMN. La lista puede ser parcial; una lista vacía no significa que no existan alertas.',
   };
 }
 
