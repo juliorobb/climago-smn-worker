@@ -116,6 +116,40 @@ async function fetchCachedSmn(url, headers, ttlSeconds, timeoutMs) {
   return { response, cacheHit: false };
 }
 
+
+const CAP_RSS_FEED = 'https://ssl.smn.gob.ar/feeds/CAP/rss_alertaCAP_nuevo.xml';
+function xmlTagText(xml, tag) {
+  const re = new RegExp(`<(?:[\\\\w.-]+:)?${tag}(?:\\\\s[^>]*)?>([\\\\s\\\\S]*?)<\\\\/(?:[\\\\w.-]+:)?${tag}\\\\s*>`, 'i');
+  const m = xml.match(re);
+  return m ? decodeXml(m[1]).replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim() : '';
+}
+async function probeCapRss() {
+  const result = await fetchCachedSmn(CAP_RSS_FEED, {
+    'User-Agent': 'Mozilla/5.0 (compatible; ClimaGo/1.0)',
+    'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+  }, 300, 12000);
+  const response = result.response;
+  if (!response.ok) return {
+    ok: false, source: 'SMN / CAP RSS', httpStatus: response.status,
+    cacheHit: result.cacheHit, message: 'El feed RSS CAP respondió con error HTTP ' + response.status,
+  };
+  const xml = await response.text();
+  const items = blocks(xml, 'item').map(item => ({
+    title: xmlTagText(item, 'title'),
+    description: xmlTagText(item, 'description'),
+    link: xmlTagText(item, 'link'),
+    pubDate: xmlTagText(item, 'pubDate'),
+    guid: xmlTagText(item, 'guid'),
+  })).filter(item => item.title || item.description || item.link);
+  return {
+    ok: true, source: 'SMN / CAP RSS', testedAt: new Date().toISOString(),
+    httpStatus: response.status, contentType: response.headers.get('content-type') || '',
+    cacheHit: result.cacheHit, bytes: new TextEncoder().encode(xml).length,
+    itemsFound: items.length, sampleItems: items.slice(0, 10),
+    note: 'Prueba de acceso al índice RSS oficial. No descarga documentos CAP XML ni confirma cobertura geográfica completa.',
+  };
+}
+
 async function getAlerts(lat, lon) {
   const diagnostics = {
     feedHttpStatus: null,
@@ -466,6 +500,9 @@ export default {
     const url = new URL(request.url), q = Object.fromEntries(url.searchParams.entries());
     try {
       if (q.resource === 'health') return json({ ok: true, service: 'ClimaGo API', time: new Date().toISOString() }, 200, { 'Cache-Control': 'no-store' });
+      if (q.resource === 'smn-rss-probe') {
+        return json(await probeCapRss(), 200, { 'Cache-Control': 'no-store' });
+      }
       if (q.resource === 'smn-json-probe') {
         const lat = q.lat === undefined ? -31.4167 : Number(q.lat);
         const lon = q.lon === undefined ? -64.1833 : Number(q.lon);
