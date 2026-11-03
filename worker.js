@@ -97,9 +97,9 @@ async function getAlerts(lat, lon) {
   diagnostics.feedBytes = new TextEncoder().encode(feed).length;
 
   // La página CAP del SMN publica enlaces XML; se cuentan antes de limitar el lote.
-  const candidates = [...feed.matchAll(/https?:[^\\s"'<>]+?\\.xml(?:\\?[^\\s"'<>]*)?/gi)]
+  const candidates = [...feed.matchAll(/https?:[^\s"'<>]+?\.xml(?:\?[^\s"'<>]*)?/gi)]
     .map(m => decodeXml(m[0]).replace(/&amp;/g, '&'));
-  const urls = [...new Set(candidates)].filter(u => /smn\\.gob\\.ar/i.test(u));
+  const urls = [...new Set(candidates)].filter(u => /smn\.gob\.ar/i.test(u));
   diagnostics.candidateUrlsFound = urls.length;
   const selectedUrls = urls.slice(0, 60);
   const results = [];
