@@ -68,29 +68,98 @@ function parseCap(xml, lat, lon) {
   return out;
 }
 async function getAlerts(lat, lon) {
-  const feedResponse = await fetch(CAP_FEED, { headers: { 'User-Agent': 'ClimaGo/1.0' }, signal: AbortSignal.timeout(15000) });
+  const diagnostics = {
+    feedHttpStatus: null,
+    feedContentType: '',
+    feedBytes: 0,
+    candidateUrlsFound: 0,
+    documentsAttempted: 0,
+    documentsDownloaded: 0,
+    documentsWithInfoBlocks: 0,
+    documentsParsed: 0,
+    documentsWithoutInfoBlocks: 0,
+    httpErrors: 0,
+    fetchErrors: 0,
+    parseErrors: 0,
+    errors: [],
+  };
+  const addError = (kind, detail) => {
+    if (diagnostics.errors.length < 8) diagnostics.errors.push({ kind, detail: String(detail).slice(0, 220) });
+  };
+  const feedResponse = await fetch(CAP_FEED, {
+    headers: { 'User-Agent': 'ClimaGo/1.0' },
+    signal: AbortSignal.timeout(15000),
+  });
+  diagnostics.feedHttpStatus = feedResponse.status;
+  diagnostics.feedContentType = feedResponse.headers.get('content-type') || '';
   if (!feedResponse.ok) throw new Error(`El feed CAP del SMN respondió HTTP ${feedResponse.status}`);
   const feed = await feedResponse.text();
-  // RSS enclosures/links pueden venir como URL escapada o dentro de etiquetas XML.
-  const candidates = [...feed.matchAll(/https?:[^\s"'<>]+?\.xml(?:\?[^\s"'<>]*)?/gi)]
+  diagnostics.feedBytes = new TextEncoder().encode(feed).length;
+
+  // La página CAP del SMN publica enlaces XML; se cuentan antes de limitar el lote.
+  const candidates = [...feed.matchAll(/https?:[^\\s"'<>]+?\\.xml(?:\\?[^\\s"'<>]*)?/gi)]
     .map(m => decodeXml(m[0]).replace(/&amp;/g, '&'));
-  const urls = [...new Set(candidates)].filter(u => /smn\.gob\.ar/i.test(u)).slice(0, 60);
+  const urls = [...new Set(candidates)].filter(u => /smn\\.gob\\.ar/i.test(u));
+  diagnostics.candidateUrlsFound = urls.length;
+  const selectedUrls = urls.slice(0, 60);
   const results = [];
-  for (let i = 0; i < urls.length; i += 6) {
-    const batch = await Promise.all(urls.slice(i, i + 6).map(async url => {
+
+  for (let i = 0; i < selectedUrls.length; i += 6) {
+    const batch = await Promise.all(selectedUrls.slice(i, i + 6).map(async url => {
+      diagnostics.documentsAttempted++;
       try {
-        const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
-        if (!r.ok) return [];
-        return parseCap(await r.text(), lat, lon);
-      } catch { return []; }
+        const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        if (!response.ok) {
+          diagnostics.httpErrors++;
+          addError('http', `HTTP ${response.status} al descargar un aviso CAP`);
+          return [];
+        }
+        diagnostics.documentsDownloaded++;
+        const xml = await response.text();
+        const infoBlocks = blocks(xml, 'info');
+        if (!infoBlocks.length) {
+          diagnostics.documentsWithoutInfoBlocks++;
+          addError('sin-info', `Documento descargado sin bloques <info>; content-type: ${response.headers.get('content-type') || 'desconocido'}; inicio: ${xml.slice(0, 100)}`);
+          return [];
+        }
+        diagnostics.documentsWithInfoBlocks++;
+        const parsed = parseCap(xml, lat, lon);
+        if (!parsed.length || parsed.some(item => !item.identifier)) {
+          diagnostics.parseErrors++;
+          addError('parseo', 'El documento contiene <info>, pero no se pudo extraer su identificador CAP.');
+          return [];
+        }
+        diagnostics.documentsParsed++;
+        return parsed;
+      } catch (error) {
+        diagnostics.fetchErrors++;
+        addError('fetch', error?.message || error);
+        return [];
+      }
     }));
     results.push(...batch);
   }
+
   const now = Date.now();
-  const active = results.flat().filter(a => a.identifier && (!a.expires || Date.parse(a.expires) >= now) && a.status.toLowerCase() !== 'cancel');
+  const active = results.flat().filter(a =>
+    a.identifier &&
+    (!a.expires || Date.parse(a.expires) >= now) &&
+    a.status.toLowerCase() !== 'cancel'
+  );
   const unique = [...new Map(active.map(a => [a.identifier, a])).values()];
   unique.sort((a, b) => Number(b.affectsLocation) - Number(a.affectsLocation));
-  return { source: 'SMN / CAP', generatedAt: new Date().toISOString(), location: { lat, lon }, feedItemsFound: urls.length, alerts: unique, activeForLocation: unique.filter(a => a.affectsLocation) };
+  const alerts = unique;
+  const activeForLocation = unique.filter(a => a.affectsLocation);
+
+  return {
+    source: 'SMN / CAP',
+    generatedAt: new Date().toISOString(),
+    location: { lat, lon },
+    feedItemsFound: selectedUrls.length,
+    alerts,
+    activeForLocation,
+    diagnostics,
+  };
 }
 async function rainbow(request, env, q) {
   if (!env.RAINBOW_API_KEY) return json({ error: 'Radar no configurado: falta el secreto RAINBOW_API_KEY.' }, 503);
