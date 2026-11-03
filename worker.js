@@ -326,6 +326,44 @@ async function probeSmn(lat, lon) {
   };
 }
 
+
+async function probeSmnJson() {
+  // Prueba única y acotada: rutas JSON identificadas en implementaciones comunitarias.
+  // Sin token, sin reintentos y sin cache para registrar la respuesta real del origen.
+  const targets = [
+    { name: 'shortterm_global', url: 'https://ws1.smn.gob.ar/v1/warning/shortterm/' },
+    { name: 'alert_area_762', url: 'https://ws1.smn.gob.ar/v1/warning/alert/area/762' },
+  ];
+  const results = [];
+  for (const target of targets) {
+    try {
+      const response = await fetch(target.url, {
+        headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; ClimaGo-Diagnostic/1.0)' },
+        signal: AbortSignal.timeout(10000),
+      });
+      const body = await response.text();
+      results.push({
+        name: target.name,
+        httpStatus: response.status,
+        ok: response.ok,
+        contentType: response.headers.get('content-type') || '',
+        bytes: new TextEncoder().encode(body).length,
+        retryAfter: response.headers.get('retry-after') || null,
+        sample: body.slice(0, 600),
+      });
+    } catch (error) {
+      results.push({ name: target.name, error: String(error?.message || error) });
+    }
+  }
+  return {
+    testedAt: new Date().toISOString(),
+    authentication: 'none',
+    retryCount: 0,
+    results,
+    note: 'HTTP 200 no confirma por sí solo cobertura ni esquema. El área 762 es un identificador observado en un ejemplo comunitario y debe validarse para Córdoba.',
+  };
+}
+
 async function rainbow(request, env, q) {
   if (!env.RAINBOW_API_KEY) return json({ error: 'Radar no configurado: falta el secreto RAINBOW_API_KEY.' }, 503);
   const headers = { 'Ocp-Apim-Subscription-Key': env.RAINBOW_API_KEY };
@@ -354,6 +392,7 @@ export default {
     const url = new URL(request.url), q = Object.fromEntries(url.searchParams.entries());
     try {
       if (q.resource === 'health') return json({ ok: true, service: 'ClimaGo API', time: new Date().toISOString() }, 200, { 'Cache-Control': 'no-store' });
+      if (q.resource === 'smn-json-probe') return json(await probeSmnJson(), 200, { 'Cache-Control': 'no-store' });
       if (q.resource === 'smn-probe') {
         const lat = q.lat === undefined ? -31.4167 : Number(q.lat);
         const lon = q.lon === undefined ? -64.1833 : Number(q.lon);
