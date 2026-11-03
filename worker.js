@@ -100,9 +100,7 @@ async function getAlerts(lat, lon) {
   const feed = await feedResponse.text();
   diagnostics.feedBytes = new TextEncoder().encode(feed).length;
 
-  const candidates = [...feed.matchAll(/https?:[^\\s"'<>]+?\\.xml(?:\\?[^\\s"'<>]*)?/gi)]
-    .map(m => decodeXml(m[0]).replace(/&amp;/g, '&'));
-  const urls = [...new Set(candidates)].filter(u => /smn\\.gob\\.ar/i.test(u));
+  const urls = extractCapUrls(feed);
   diagnostics.candidateUrlsFound = urls.length;
 
   // Consultar un lote pequeño y secuencial para no disparar el límite del SMN.
@@ -164,16 +162,139 @@ async function getAlerts(lat, lon) {
   const alerts = unique;
   const activeForLocation = unique.filter(a => a.affectsLocation);
 
+  const coverageComplete = urls.length > 0 && selectedUrls.length === urls.length &&
+    diagnostics.documentsParsed === selectedUrls.length && !diagnostics.stoppedAfterRateLimit &&
+    diagnostics.httpErrors === 0 && diagnostics.fetchErrors === 0 && diagnostics.parseErrors === 0;
+  const dataStatus = diagnostics.stoppedAfterRateLimit ? 'rate_limited' :
+    coverageComplete ? 'ok' : diagnostics.documentsParsed > 0 ? 'partial' : 'unavailable';
   return {
     source: 'SMN / CAP',
     generatedAt: new Date().toISOString(),
     location: { lat, lon },
-    feedItemsFound: selectedUrls.length,
+    dataStatus,
+    coverageComplete,
+    feedItemsFound: urls.length,
+    documentsSelected: selectedUrls.length,
     alerts,
     activeForLocation,
     diagnostics,
+    note: coverageComplete ? 'Se procesaron todos los documentos localizados en el feed.' :
+      'La consulta no cubrió todos los documentos del feed. Una lista vacía o parcial no significa que no existan alertas.',
   };
 }
+
+function extractCapUrls(feed) {
+  const candidates = [...feed.matchAll(/https?:[^\s"'<>]+?\.xml(?:\?[^\s"'<>]*)?/gi)]
+    .map(m => decodeXml(m[0]).replace(/&amp;/g, '&'));
+  return [...new Set(candidates)].filter(u => /smn\.gob\.ar/i.test(u));
+}
+async function probeSmn(lat, lon) {
+  const diagnostics = {
+    feedHttpStatus: null,
+    feedContentType: '',
+    feedBytes: 0,
+    candidateUrlsFound: 0,
+    capHttpStatus: null,
+    capContentType: '',
+    capBytes: 0,
+    capPath: '',
+    infoBlocksFound: 0,
+    alertsParsed: 0,
+    retryAfter: null,
+  };
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (compatible; ClimaGo/1.0)',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  };
+  const feedResponse = await fetch(CAP_FEED, {
+    headers,
+    signal: AbortSignal.timeout(15000),
+  });
+  diagnostics.feedHttpStatus = feedResponse.status;
+  diagnostics.feedContentType = feedResponse.headers.get('content-type') || '';
+  if (!feedResponse.ok) {
+    diagnostics.retryAfter = feedResponse.headers.get('retry-after') || null;
+    return {
+      ok: false,
+      stage: 'feed',
+      message: 'El feed del SMN respondió HTTP ' + feedResponse.status + '.',
+      httpStatus: feedResponse.status,
+      diagnostics,
+    };
+  }
+  const feed = await feedResponse.text();
+  diagnostics.feedBytes = new TextEncoder().encode(feed).length;
+  const urls = extractCapUrls(feed);
+  diagnostics.candidateUrlsFound = urls.length;
+  if (!urls.length) {
+    return {
+      ok: false,
+      stage: 'feed_parse',
+      message: 'El feed respondió, pero no se encontraron enlaces a documentos CAP XML.',
+      httpStatus: 502,
+      diagnostics,
+    };
+  }
+
+  // Prueba acotada: descarga solamente el primer documento CAP.
+  const capUrl = urls[0];
+  diagnostics.capPath = new URL(capUrl).pathname;
+  const capResponse = await fetch(capUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; ClimaGo/1.0)',
+      'Accept': 'application/cap+xml, application/xml, text/xml, */*',
+    },
+    signal: AbortSignal.timeout(10000),
+  });
+  diagnostics.capHttpStatus = capResponse.status;
+  diagnostics.capContentType = capResponse.headers.get('content-type') || '';
+  if (!capResponse.ok) {
+    diagnostics.retryAfter = capResponse.headers.get('retry-after') || null;
+    return {
+      ok: false,
+      stage: 'cap_download',
+      message: 'El SMN rechazó la descarga CAP con HTTP ' + capResponse.status + '.',
+      httpStatus: capResponse.status,
+      diagnostics,
+    };
+  }
+
+  const xml = await capResponse.text();
+  diagnostics.capBytes = new TextEncoder().encode(xml).length;
+  diagnostics.infoBlocksFound = blocks(xml, 'info').length;
+  if (!diagnostics.infoBlocksFound) {
+    return {
+      ok: false,
+      stage: 'cap_parse',
+      message: 'El documento se descargó, pero no contiene bloques CAP <info> reconocibles.',
+      httpStatus: 502,
+      diagnostics,
+    };
+  }
+  const parsed = parseCap(xml, lat, lon).filter(item => item.identifier);
+  diagnostics.alertsParsed = parsed.length;
+  if (!parsed.length) {
+    return {
+      ok: false,
+      stage: 'cap_parse',
+      message: 'El XML se descargó, pero no se pudo leer un identificador CAP válido.',
+      httpStatus: 502,
+      diagnostics,
+    };
+  }
+  return {
+    ok: true,
+    stage: 'cap_download_and_parse',
+    message: 'El feed y un documento CAP se descargaron y analizaron correctamente.',
+    source: 'Servicio Meteorológico Nacional / CAP',
+    testedAt: new Date().toISOString(),
+    location: { lat, lon },
+    sampleAlerts: parsed.slice(0, 3),
+    diagnostics,
+    note: 'Esta prueba valida un único documento CAP; no demuestra que se hayan descargado todas las alertas vigentes.',
+  };
+}
+
 async function rainbow(request, env, q) {
   if (!env.RAINBOW_API_KEY) return json({ error: 'Radar no configurado: falta el secreto RAINBOW_API_KEY.' }, 503);
   const headers = { 'Ocp-Apim-Subscription-Key': env.RAINBOW_API_KEY };
@@ -202,11 +323,21 @@ export default {
     const url = new URL(request.url), q = Object.fromEntries(url.searchParams.entries());
     try {
       if (q.resource === 'health') return json({ ok: true, service: 'ClimaGo API', time: new Date().toISOString() }, 200, { 'Cache-Control': 'no-store' });
+      if (q.resource === 'smn-probe') {
+        const lat = q.lat === undefined ? -31.4167 : Number(q.lat);
+        const lon = q.lon === undefined ? -64.1833 : Number(q.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return json({ error: 'Coordenadas lat/lon inválidas.' }, 400);
+        const result = await probeSmn(lat, lon);
+        const status = result.ok ? 200 : (result.httpStatus >= 400 ? result.httpStatus : 502);
+        return json(result, status, { 'Cache-Control': 'no-store' });
+      }
       if (q.resource === 'alerts') {
         const lat = Number(q.lat), lon = Number(q.lon);
         if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return json({ error: 'Coordenadas lat/lon inválidas.' }, 400);
         const data = await getAlerts(lat, lon);
-        return json(data, 200, { 'Cache-Control': 'public, max-age=120' });
+        const status = data.dataStatus === 'ok' ? 200 : data.dataStatus === 'partial' ? 206 : data.dataStatus === 'rate_limited' ? 429 : 503;
+        const cacheControl = status === 200 ? 'public, max-age=120' : 'no-store';
+        return json(data, status, { 'Cache-Control': cacheControl });
       }
       if (q.resource === 'radar-snapshot' || q.resource === 'radar-tile') return await rainbow(request, env, q);
       return json({ error: 'Recurso no reconocido. Usá resource=health, alerts, radar-snapshot o radar-tile.' }, 404);
