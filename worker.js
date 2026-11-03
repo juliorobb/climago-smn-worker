@@ -5,7 +5,7 @@
  *         ?resource=radar-tile&layer=radars|precip&snapshot=...&forecast=0&z=...&x=...&y=...
  * Optional secret: RAINBOW_API_KEY (Worker secret). Alerts do not require a key.
  */
-const CAP_FEED = 'https://ssl.smn.gob.ar/feeds/CAP/rss_alertaCAP_nuevo.xml';
+const CAP_FEED = 'https://ssl.smn.gob.ar/CAP/AR.php';
 const RAINBOW = 'https://api.rainbow.ai';
 const CORS = {
   'Access-Control-Allow-Origin': '*',
