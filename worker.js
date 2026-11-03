@@ -327,7 +327,29 @@ async function probeSmn(lat, lon) {
 }
 
 
-async function probeSmnJson() {
+
+function pointInRing(lon, lat, ring) {
+  if (!Array.isArray(ring) || ring.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const p = ring[i], q = ring[j];
+    if (!Array.isArray(p) || !Array.isArray(q)) continue;
+    const [xi, yi] = p, [xj, yj] = q;
+    if (((yi > lat) !== (yj > lat)) && lon < ((xj - xi) * (lat - yi)) / ((yj - yi) || 1e-12) + xi) inside = !inside;
+  }
+  return inside;
+}
+function geometryContainsPoint(geometry, lat, lon) {
+  if (!geometry || !Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+  const containsPolygon = polygon => Array.isArray(polygon) && polygon.length > 0 &&
+    pointInRing(lon, lat, polygon[0]) &&
+    !polygon.slice(1).some(hole => pointInRing(lon, lat, hole));
+  if (geometry.type === 'Polygon') return containsPolygon(geometry.coordinates);
+  if (geometry.type === 'MultiPolygon') return Array.isArray(geometry.coordinates) && geometry.coordinates.some(containsPolygon);
+  return false;
+}
+
+async function probeSmnJson(lat, lon) {
   // Prueba única y acotada: rutas JSON identificadas en implementaciones comunitarias.
   // Sin token, sin reintentos y sin cache para registrar la respuesta real del origen.
   const targets = [
@@ -365,6 +387,8 @@ async function probeSmnJson() {
             severity: item.severity ?? item.level ?? null,
             geometry: item.geometry ?? item.polygon ?? null,
             images: item.images ?? null,
+            active: !((item.end_date ?? item.expires ?? item.expiration) && Date.parse(item.end_date ?? item.expires ?? item.expiration) < Date.now()),
+            affectsLocation: geometryContainsPoint(item.geometry ?? item.polygon, lat, lon),
           }));
         } catch {
           result.parseError = 'La respuesta HTTP fue exitosa, pero no se pudo interpretar como JSON.';
@@ -378,8 +402,15 @@ async function probeSmnJson() {
       results.push({ name: target.name, error: String(error?.message || error) });
     }
   }
+  const allItems = results.flatMap(r => Array.isArray(r.items) ? r.items : []);
+  const activeItems = allItems.filter(item => item.active);
+  const matchingItems = activeItems.filter(item => item.affectsLocation);
   return {
     testedAt: new Date().toISOString(),
+    location: { lat, lon },
+    activeItemCount: activeItems.length,
+    itemsAffectingLocation: matchingItems.length,
+    matchingAlerts: matchingItems,
     authentication: 'none',
     retryCount: 0,
     results,
@@ -415,7 +446,12 @@ export default {
     const url = new URL(request.url), q = Object.fromEntries(url.searchParams.entries());
     try {
       if (q.resource === 'health') return json({ ok: true, service: 'ClimaGo API', time: new Date().toISOString() }, 200, { 'Cache-Control': 'no-store' });
-      if (q.resource === 'smn-json-probe') return json(await probeSmnJson(), 200, { 'Cache-Control': 'no-store' });
+      if (q.resource === 'smn-json-probe') {
+        const lat = q.lat === undefined ? -31.4167 : Number(q.lat);
+        const lon = q.lon === undefined ? -64.1833 : Number(q.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return json({ error: 'Coordenadas lat/lon inválidas.' }, 400);
+        return json(await probeSmnJson(lat, lon), 200, { 'Cache-Control': 'no-store' });
+      }
       if (q.resource === 'smn-probe') {
         const lat = q.lat === undefined ? -31.4167 : Number(q.lat);
         const lon = q.lon === undefined ? -64.1833 : Number(q.lon);
