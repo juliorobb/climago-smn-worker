@@ -133,3 +133,4 @@ export default {
     }
   },
 };
+// ClimaGo - primera compilación desde GitHub
