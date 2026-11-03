@@ -55,7 +55,25 @@ function parseCap(xml, lat, lon) {
         return { lat: a, lon: b, radiusKm: Number(radius) };
       }).filter(c => Number.isFinite(c.lat) && Number.isFinite(c.lon) && Number.isFinite(c.radiusKm));
       const affected = polygons.some(r => r.length >= 3 && insidePolygon(lon, lat, r)) || circles.some(c => distanceKm(lat, lon, c.lat, c.lon) <= c.radiusKm);
-      return { description: value(area, 'areaDesc'), affected };
+      // CAP polygons use "lat,lon" pairs; GeoJSON requires [lon,lat].
+      const validPolygons = polygons.filter(r => r.length >= 3);
+      const circlePolygons = circles.map(c => {
+        const ring = [];
+        for (let i = 0; i <= 48; i++) {
+          const angle = (i / 48) * Math.PI * 2;
+          const dLat = (c.radiusKm / 111.32) * Math.sin(angle);
+          const dLon = (c.radiusKm / (111.32 * Math.max(0.01, Math.cos(c.lat * Math.PI / 180)))) * Math.cos(angle);
+          ring.push([c.lon + dLon, c.lat + dLat]);
+        }
+        return ring;
+      });
+      const allRings = [...validPolygons, ...circlePolygons];
+      const geometry = allRings.length === 1
+        ? { type: 'Polygon', coordinates: [allRings[0]] }
+        : allRings.length > 1
+          ? { type: 'MultiPolygon', coordinates: allRings.map(ring => [ring]) }
+          : null;
+      return { description: value(area, 'areaDesc'), affected, geometry };
     });
     out.push({
       identifier: value(xml, 'identifier'), sender: value(xml, 'sender'), sent: value(xml, 'sent'), status: value(xml, 'status'),
