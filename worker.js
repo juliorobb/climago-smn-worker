@@ -66,6 +66,25 @@ function distanceKm(a, b, c, d) {
   const q = Math.sin(dLat / 2) ** 2 + Math.cos(a * rad) * Math.cos(c * rad) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(q));
 }
+function circleRing(lon, lat, radiusKm, steps = 48) {
+  const earthRadiusKm = 6371;
+  const angularRadius = radiusKm / earthRadiusKm;
+  const latRad = lat * Math.PI / 180;
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const bearing = 2 * Math.PI * i / steps;
+    const nextLat = Math.asin(
+      Math.sin(latRad) * Math.cos(angularRadius) +
+      Math.cos(latRad) * Math.sin(angularRadius) * Math.cos(bearing)
+    );
+    const nextLon = lon * Math.PI / 180 + Math.atan2(
+      Math.sin(bearing) * Math.sin(angularRadius) * Math.cos(latRad),
+      Math.cos(angularRadius) - Math.sin(latRad) * Math.sin(nextLat)
+    );
+    points.push([nextLon * 180 / Math.PI, nextLat * 180 / Math.PI]);
+  }
+  return points;
+}
 function parseCap(xml, lat, lon) {
   const infos = blocks(xml, 'info');
   const out = [];
@@ -74,13 +93,32 @@ function parseCap(xml, lat, lon) {
       const polygons = blocks(area, 'polygon').map(p => p.trim().split(/\s+/).map(pair => {
         const [a, b] = pair.split(',').map(Number);
         return Number.isFinite(a) && Number.isFinite(b) ? [b, a] : null;
-      }).filter(Boolean));
+      }).filter(Boolean)).filter(ring => ring.length >= 3);
+
       const circles = blocks(area, 'circle').map(c => {
-        const [coords, radius] = c.trim().split(/\s+/); const [a, b] = (coords || '').split(',').map(Number);
+        const [coords, radius] = c.trim().split(/\s+/);
+        const [a, b] = (coords || '').split(',').map(Number);
         return { lat: a, lon: b, radiusKm: Number(radius) };
-      }).filter(c => Number.isFinite(c.lat) && Number.isFinite(c.lon) && Number.isFinite(c.radiusKm));
-      const affected = polygons.some(r => r.length >= 3 && insidePolygon(lon, lat, r)) || circles.some(c => distanceKm(lat, lon, c.lat, c.lon) <= c.radiusKm);
-      return { description: value(area, 'areaDesc'), affected };
+      }).filter(c => Number.isFinite(c.lat) && Number.isFinite(c.lon) &&
+        Number.isFinite(c.radiusKm) && c.radiusKm > 0);
+
+      const affected = polygons.some(ring => insidePolygon(lon, lat, ring)) ||
+        circles.some(c => distanceKm(lat, lon, c.lat, c.lon) <= c.radiusKm);
+
+      const rings = [
+        ...polygons.map(ring => {
+          const closed = ring.map(point => [...point]);
+          const first = closed[0], last = closed[closed.length - 1];
+          if (first[0] !== last[0] || first[1] !== last[1]) closed.push([...first]);
+          return closed;
+        }),
+        ...circles.map(c => circleRing(c.lon, c.lat, c.radiusKm)),
+      ];
+      const geometry = rings.length
+        ? { type: 'MultiPolygon', coordinates: rings.map(ring => [ring]) }
+        : null;
+
+      return { description: value(area, 'areaDesc'), affected, geometry };
     });
     out.push({
       identifier: value(xml, 'identifier'), sender: value(xml, 'sender'), sent: value(xml, 'sent'), status: value(xml, 'status'),
@@ -92,6 +130,7 @@ function parseCap(xml, lat, lon) {
   }
   return out;
 }
+
 async function getAlerts(lat, lon) {
   const generatedAt = new Date().toISOString();
   const emptyResult = (extra = {}) => ({
@@ -112,7 +151,7 @@ async function getAlerts(lat, lon) {
 
   const feedResponse = await fetch(CAP_FEED, {
     headers: { 'User-Agent': 'ClimaGo/1.0' },
-    cf: { cacheTtlByStatus: { '200-299': 120, '400-599': 0 } },
+    cf: { cacheTtlByStatus: { '200-299': 600, '400-599': 0 } },
     signal: AbortSignal.timeout(15000),
   });
   if (feedResponse.status === 429) {
@@ -274,8 +313,22 @@ export default {
         const lat = Number(q.lat), lon = Number(q.lon);
         if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return json({ error: 'Coordenadas lat/lon inválidas.' }, 400);
         const data = await getAlerts(lat, lon);
+        const dataStatus = data.coverageComplete ? 'ok' :
+          data.rateLimited ? 'rate_limited' :
+          data.status === 'unavailable' || data.status === 'index-without-xml-links' ? 'unavailable' : 'partial';
+        const cap = {
+          ...data,
+          dataStatus,
+          diagnostics: {
+            documentsFound: data.feedItemsFound || 0,
+            documentsAttempted: data.attemptedDocuments || 0,
+            documentsDownloaded: data.downloadedDocuments || 0,
+            documentsFailed: data.failedDocuments || 0,
+            coverageComplete: data.coverageComplete === true,
+          },
+        };
         const ttl = data.coverageComplete ? 120 : 60;
-        return json(data, 200, {
+        return json({ cap, testedAt: data.generatedAt, location: data.location }, 200, {
           'Cache-Control': 'public, max-age=' + ttl,
           ...(data.retryAfterSeconds ? { 'Retry-After': String(data.retryAfterSeconds) } : {}),
         });
