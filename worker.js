@@ -29,19 +29,22 @@ function blocks(xml, tag) {
 }
 function extractCapUrls(feed) {
   const candidates = [];
-  const attributes = /\\b(?:href|url)\\s*=\\s*["']([^"']+)["']/gi;
+  const attributes = /(?:href|url)[ \t\r\n]*=[ \t\r\n]*["']([^"']+)["']/gi;
   for (const match of feed.matchAll(attributes)) candidates.push(match[1]);
-  const absoluteXml = /https?:[^\\s"'<>]+?\\.xml(?:\\?[^\\s"'<>]*)?/gi;
-  for (const match of feed.matchAll(absoluteXml)) candidates.push(match[0]);
+
+  // Algunos índices publican enlaces como texto o rutas relativas, no como URL absoluta.
+  for (const token of feed.split(/[ \t\r\n"'<>]+/)) {
+    if (token.toLowerCase().includes('.xml')) candidates.push(token);
+  }
 
   const urls = new Set();
   for (const raw of candidates) {
     try {
-      const clean = decodeXml(String(raw).replace(/&amp;/g, '&')).trim();
+      const clean = decodeXml(String(raw).replace(/&amp;/g, '&')).trim().replace(/[),;]+$/, '');
       const parsed = new URL(clean, CAP_FEED);
       if ((parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
           parsed.hostname === 'ssl.smn.gob.ar' &&
-          /\\.xml$/i.test(parsed.pathname)) {
+          parsed.pathname.toLowerCase().endsWith('.xml')) {
         urls.add(parsed.href);
       }
     } catch {}
@@ -219,23 +222,27 @@ async function rainbow(request, env, q) {
   }
 
   const { snapshot, z, x, y } = q;
-  if (![snapshot, z, x, y].every(v => /^\\d+$/.test(v || ''))) {
+  const tileParts = [snapshot, z, x, y];
+  if (!tileParts.every(v => v !== undefined && v !== '' && Number.isSafeInteger(Number(v)) && Number(v) >= 0)) {
     return json({ error: 'Parámetros de mosaico inválidos.' }, 400);
   }
+
   const layer = ['radars', 'precip', 'precip-global', 'clouds'].includes(q.layer)
     ? q.layer
     : 'precip-global';
-  const forecast = q.forecast || '0';
-  if (!/^\\d+$/.test(forecast) || Number(forecast) > 14400 ||
-      (['precip', 'precip-global'].includes(layer) && Number(forecast) % 600 !== 0)) {
+  const forecast = q.forecast === undefined ? '0' : q.forecast;
+  const forecastSeconds = Number(forecast);
+  if (forecast === '' || !Number.isSafeInteger(forecastSeconds) ||
+      forecastSeconds < 0 || forecastSeconds > 14400 ||
+      (['precip', 'precip-global'].includes(layer) && forecastSeconds % 600 !== 0)) {
     return json({ error: 'Pronóstico inválido. Usá segundos entre 0 y 14400, en intervalos de 600.' }, 400);
   }
 
   let path;
   if (layer === 'precip') {
-    path = '/tiles/v1/precip/' + snapshot + '/' + forecast + '/' + z + '/' + x + '/' + y;
+    path = '/tiles/v1/precip/' + snapshot + '/' + forecastSeconds + '/' + z + '/' + x + '/' + y;
   } else if (layer === 'precip-global') {
-    path = '/tiles/v1/precip-global/' + snapshot + '/' + forecast + '/' + z + '/' + x + '/' + y;
+    path = '/tiles/v1/precip-global/' + snapshot + '/' + forecastSeconds + '/' + z + '/' + x + '/' + y;
   } else if (layer === 'clouds') {
     path = '/tiles/v1/clouds/' + snapshot + '/' + z + '/' + x + '/' + y;
   } else {
