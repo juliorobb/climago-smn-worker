@@ -2,8 +2,8 @@
  * ClimaGo API Worker (Cloudflare Workers, compatible with Free plan)
  * Routes: ?resource=alerts&lat=-31.4&lon=-64.2
  *         ?resource=radar-snapshot&layer=radars|precip
- *         ?resource=radar-tile&layer=radars|precip&snapshot=...&forecast=0&z=...&x=...&y=...
- * Optional secret: RAINBOW_API_KEY (Worker secret). Alerts do not require a key.
+ *         ?resource=radar-tile (respuesta informativa; el visor oficial se incrusta en la app)
+ * Alertas CAP del SMN sin claves privadas. Radar servido mediante visor oficial SMN.
  */
 const CAP_FEED = 'https://ssl.smn.gob.ar/CAP/AR.php';
 const RAINBOW = 'https://api.rainbow.ai';
@@ -238,68 +238,23 @@ async function getAlerts(lat, lon) {
   };
 }
 
-async function rainbow(request, env, q) {
-  if (!env.RAINBOW_API_KEY) return json({ error: 'Radar no configurado: falta el secreto RAINBOW_API_KEY.' }, 503);
-  const headers = { 'Ocp-Apim-Subscription-Key': env.RAINBOW_API_KEY };
-
+async function officialRadar(q) {
+  const viewer = 'https://www.smn.gob.ar/radar/responsiveFrame';
   if (q.resource === 'radar-snapshot') {
-    const layer = ['radars', 'precip', 'precip-global', 'clouds'].includes(q.layer)
-      ? q.layer
-      : 'precip-global';
-    const r = await fetch(RAINBOW + '/tiles/v1/snapshot?layer=' + encodeURIComponent(layer), {
-      headers,
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!r.ok) return json({ error: 'Rainbow snapshot respondió HTTP ' + r.status }, r.status);
-    return new Response(await r.text(), {
-      headers: {
-        ...CORS,
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=120',
-      },
-    });
+    return json({
+      provider: 'Servicio Meteorológico Nacional',
+      mode: 'official-interactive-viewer',
+      viewer,
+      note: 'El SMN entrega el radar mediante su visor oficial interactivo; no se dispone aquí de una URL pública y estable de teselas para Leaflet.',
+      updatedAt: new Date().toISOString(),
+    }, 200, { 'Cache-Control': 'public, max-age=300' });
   }
-
-  const { snapshot, z, x, y } = q;
-  const tileParts = [snapshot, z, x, y];
-  if (!tileParts.every(v => v !== undefined && v !== '' && Number.isSafeInteger(Number(v)) && Number(v) >= 0)) {
-    return json({ error: 'Parámetros de mosaico inválidos.' }, 400);
-  }
-
-  const layer = ['radars', 'precip', 'precip-global', 'clouds'].includes(q.layer)
-    ? q.layer
-    : 'precip-global';
-  const forecast = q.forecast === undefined ? '0' : q.forecast;
-  const forecastSeconds = Number(forecast);
-  if (forecast === '' || !Number.isSafeInteger(forecastSeconds) ||
-      forecastSeconds < 0 || forecastSeconds > 14400 ||
-      (['precip', 'precip-global'].includes(layer) && forecastSeconds % 600 !== 0)) {
-    return json({ error: 'Pronóstico inválido. Usá segundos entre 0 y 14400, en intervalos de 600.' }, 400);
-  }
-
-  let path;
-  if (layer === 'precip') {
-    path = '/tiles/v1/precip/' + snapshot + '/' + forecastSeconds + '/' + z + '/' + x + '/' + y;
-  } else if (layer === 'precip-global') {
-    path = '/tiles/v1/precip-global/' + snapshot + '/' + forecastSeconds + '/' + z + '/' + x + '/' + y;
-  } else if (layer === 'clouds') {
-    path = '/tiles/v1/clouds/' + snapshot + '/' + z + '/' + x + '/' + y;
-  } else {
-    path = '/tiles/v1/radars/' + snapshot + '/' + z + '/' + x + '/' + y;
-  }
-
-  const upstream = await fetch(RAINBOW + path, {
-    headers,
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!upstream.ok) return json({ error: 'Rainbow tile respondió HTTP ' + upstream.status }, upstream.status);
-  return new Response(upstream.body, {
-    headers: {
-      ...CORS,
-      'Content-Type': upstream.headers.get('Content-Type') || 'image/png',
-      'Cache-Control': 'public, max-age=180',
-    },
-  });
+  return json({
+    error: 'No hay un endpoint público de teselas de radar SMN verificado para servir esta solicitud.',
+    provider: 'Servicio Meteorológico Nacional',
+    viewer,
+    use: 'Incrustar el visor oficial SMN en la pantalla Radar de ClimaGo.',
+  }, 410);
 }
 
 export default {
@@ -333,7 +288,7 @@ export default {
           ...(data.retryAfterSeconds ? { 'Retry-After': String(data.retryAfterSeconds) } : {}),
         });
       }
-      if (q.resource === 'radar-snapshot' || q.resource === 'radar-tile') return await rainbow(request, env, q);
+      if (q.resource === 'radar-snapshot' || q.resource === 'radar-tile') return await officialRadar(q);
       return json({ error: 'Recurso no reconocido. Usá resource=health, alerts, radar-snapshot o radar-tile.' }, 404);
     } catch (e) {
       return json({ error: 'No se pudo completar la consulta meteorológica.', detail: String(e?.message || e) }, 502, { 'Cache-Control': 'no-store' });
