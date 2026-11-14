@@ -49,7 +49,7 @@ function extractCapUrls(feed) {
       }
     } catch {}
   }
-  return [...urls].slice(0, 60);
+  return [...urls];
 }
 
 function insidePolygon(lon, lat, ring) {
