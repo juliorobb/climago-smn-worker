@@ -2,9 +2,25 @@ name = "climago-smn"
 main = "worker.js"
 compatibility_date = "2026-11-02"
 
-# No agregar claves privadas aquí.
-# Si más adelante se habilita Rainbow, RAINBOW_API_KEY debe configurarse
-# como Secret desde el panel de Cloudflare, nunca dentro de este archivo.
+# Cron: consulta avisos CAP cada 10 minutos (Cloudflare ejecuta cron en UTC).
+[triggers]
+crons = ["*/10 * * * *"]
+
+# IMPORTANTE: crear primero el namespace:
+#   npx wrangler kv namespace create ALERTS_KV
+# Después descomentar el bloque y reemplazar el ID por el devuelto por Cloudflare.
+# [[kv_namespaces]]
+# binding = "ALERTS_KV"
+# id = "PEGAR_AQUI_EL_ID_REAL"
+
+[vars]
+VAPID_SUBJECT = "mailto:soporte@climago.app"
+
+# APP_ORIGIN debe configurarse en Cloudflare como variable de entorno
+# con el origen exacto de la PWA publicada (por ejemplo, https://tu-dominio).
+# VAPID_SERVER_PUBLIC_KEY debe configurarse como variable.
+# VAPID_SERVER_PRIVATE_KEY debe configurarse como Secret.
+# Nunca guardar claves privadas en este archivo.
 
 # Habilita el comando npx wrangler preview usado por Cloudflare Workers Builds.
 [previews]
