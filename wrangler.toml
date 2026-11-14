@@ -6,6 +6,7 @@ compatibility_date = "2026-11-02"
 [triggers]
 crons = ["*/10 * * * *"]
 
+# Almacenamiento de producción.
 [[kv_namespaces]]
 binding = "ALERTS_KV"
 id = "7bc92d39b46e4fb599d2ad8461d764e8"
@@ -13,11 +14,12 @@ id = "7bc92d39b46e4fb599d2ad8461d764e8"
 [vars]
 VAPID_SUBJECT = "mailto:soporte@climago.app"
 
-# APP_ORIGIN debe configurarse en Cloudflare como variable de entorno
-# con el origen exacto de la PWA publicada.
-# VAPID_SERVER_PUBLIC_KEY debe configurarse como variable.
-# VAPID_SERVER_PRIVATE_KEY debe configurarse como Secret.
-# Nunca guardar claves privadas en este archivo.
+# APP_ORIGIN y las claves VAPID se configuran como variables/secretos
+# directamente en Cloudflare. Nunca guardar la clave privada aquí.
 
-# Habilita el comando npx wrangler preview usado por Cloudflare Workers Builds.
+# Recursos aislados para Worker Previews (ramas y pull requests).
 [previews]
+
+[[previews.kv_namespaces]]
+binding = "ALERTS_KV"
+id = "35f76904acef44939272005cd8ad67d2"
