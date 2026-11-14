@@ -238,6 +238,190 @@ async function getAlerts(lat, lon) {
   };
 }
 
+
+const SUBSCRIPTION_PREFIX = 'subscription:';
+const SENT_PREFIX = 'sent:';
+const MAX_SUBSCRIPTIONS = 1000;
+const MAX_PUSH_HISTORY = 500;
+
+function jsonForOrigin(data, status, request, env, extra = {}) {
+  const origin = request.headers.get('Origin') || '';
+  const allowed = env.APP_ORIGIN && origin === env.APP_ORIGIN;
+  return json(data, status, {
+    ...extra,
+    'Access-Control-Allow-Origin': allowed ? origin : 'null',
+    'Vary': 'Origin',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  });
+}
+
+function validCoordinates(lat, lon) {
+  return Number.isFinite(lat) && Number.isFinite(lon) &&
+    Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+}
+
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+function validSubscription(value) {
+  return value && typeof value === 'object' &&
+    typeof value.endpoint === 'string' &&
+    value.endpoint.startsWith('https://') &&
+    value.keys && typeof value.keys.p256dh === 'string' &&
+    typeof value.keys.auth === 'string';
+}
+
+function isEffectiveNow(alert, now = Date.now()) {
+  const start = Date.parse(alert.effective || alert.onset || '');
+  return !Number.isFinite(start) || start <= now;
+}
+
+async function saveSubscription(request, env) {
+  if (!env.ALERTS_KV) return jsonForOrigin({ error: 'El almacenamiento de suscripciones no está configurado.' }, 503, request, env);
+  const origin = request.headers.get('Origin') || '';
+  if (!env.APP_ORIGIN || origin !== env.APP_ORIGIN) return jsonForOrigin({ error: 'Origen no autorizado.' }, 403, request, env);
+  const length = Number(request.headers.get('Content-Length') || 0);
+  if (length > 12000) return jsonForOrigin({ error: 'Solicitud demasiado grande.' }, 413, request, env);
+  let body;
+  try { body = await request.json(); } catch { return jsonForOrigin({ error: 'JSON inválido.' }, 400, request, env); }
+  const subscription = body?.subscription;
+  const lat = Number(body?.lat), lon = Number(body?.lon);
+  if (!validSubscription(subscription) || !validCoordinates(lat, lon)) {
+    return jsonForOrigin({ error: 'Se requiere una suscripción Push válida y coordenadas lat/lon válidas.' }, 400, request, env);
+  }
+  const id = await sha256Hex(subscription.endpoint);
+  const record = {
+    id, subscription, lat, lon,
+    locationName: String(body.locationName || 'Ubicación guardada').slice(0, 100),
+    updatedAt: new Date().toISOString(),
+  };
+  await env.ALERTS_KV.put(SUBSCRIPTION_PREFIX + id, JSON.stringify(record));
+  return jsonForOrigin({ ok: true, id }, 201, request, env);
+}
+
+async function removeSubscription(request, env) {
+  if (!env.ALERTS_KV) return jsonForOrigin({ error: 'El almacenamiento de suscripciones no está configurado.' }, 503, request, env);
+  const origin = request.headers.get('Origin') || '';
+  if (!env.APP_ORIGIN || origin !== env.APP_ORIGIN) return jsonForOrigin({ error: 'Origen no autorizado.' }, 403, request, env);
+  let body;
+  try { body = await request.json(); } catch { return jsonForOrigin({ error: 'JSON inválido.' }, 400, request, env); }
+  if (typeof body?.endpoint !== 'string' || !body.endpoint.startsWith('https://')) {
+    return jsonForOrigin({ error: 'Endpoint de suscripción inválido.' }, 400, request, env);
+  }
+  const id = await sha256Hex(body.endpoint);
+  await Promise.all([
+    env.ALERTS_KV.delete(SUBSCRIPTION_PREFIX + id),
+    env.ALERTS_KV.delete(SENT_PREFIX + id),
+  ]);
+  return jsonForOrigin({ ok: true }, 200, request, env);
+}
+
+async function listSubscriptions(kv) {
+  const records = [];
+  let cursor;
+  do {
+    const page = await kv.list({ prefix: SUBSCRIPTION_PREFIX, limit: 1000, ...(cursor ? { cursor } : {}) });
+    for (const key of page.keys) {
+      const raw = await kv.get(key.name);
+      if (!raw) continue;
+      try { records.push(JSON.parse(raw)); } catch { await kv.delete(key.name); }
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor && records.length < MAX_SUBSCRIPTIONS);
+  return records.slice(0, MAX_SUBSCRIPTIONS);
+}
+
+async function sendAlertPush(record, alert, env) {
+  const sentKey = SENT_PREFIX + record.id;
+  let history = {};
+  try { history = JSON.parse(await env.ALERTS_KV.get(sentKey) || '{}'); } catch {}
+  if (history[alert.identifier]) return { skipped: true };
+
+  const { buildPushPayload } = await import('@block65/webcrypto-web-push');
+  const vapid = {
+    subject: env.VAPID_SUBJECT || 'mailto:soporte@climago.app',
+    publicKey: env.VAPID_SERVER_PUBLIC_KEY,
+    privateKey: env.VAPID_SERVER_PRIVATE_KEY,
+  };
+  if (!vapid.publicKey || !vapid.privateKey) throw new Error('Faltan las claves VAPID del Worker.');
+
+  const payload = await buildPushPayload({
+    data: JSON.stringify({
+      title: alert.headline || alert.event || 'Alerta meteorológica',
+      body: alert.description || alert.instruction || 'El SMN emitió un aviso para una zona que tenés guardada.',
+      tag: 'smn-' + await sha256Hex(alert.identifier).then(x => x.slice(0, 24)),
+      url: '/?page=alerts',
+      event: alert.event || '',
+      severity: alert.severity || 'Unknown',
+      expires: alert.expires || null,
+    }),
+    options: { ttl: 900, urgency: 'high' },
+  }, record.subscription, vapid);
+
+  const response = await fetch(record.subscription.endpoint, payload);
+  if (response.status === 404 || response.status === 410) {
+    await Promise.all([
+      env.ALERTS_KV.delete(SUBSCRIPTION_PREFIX + record.id),
+      env.ALERTS_KV.delete(sentKey),
+    ]);
+    return { removed: true, status: response.status };
+  }
+  if (!response.ok) throw new Error('Push endpoint respondió HTTP ' + response.status);
+
+  history[alert.identifier] = new Date().toISOString();
+  const entries = Object.entries(history).sort((a, b) => Date.parse(b[1]) - Date.parse(a[1])).slice(0, MAX_PUSH_HISTORY);
+  await env.ALERTS_KV.put(sentKey, JSON.stringify(Object.fromEntries(entries)));
+  return { sent: true, status: response.status };
+}
+
+async function runScheduledAlerts(env) {
+  if (!env.ALERTS_KV) throw new Error('Falta el binding KV ALERTS_KV.');
+  if (!env.VAPID_SERVER_PUBLIC_KEY || !env.VAPID_SERVER_PRIVATE_KEY) throw new Error('Faltan las claves VAPID.');
+  const subscriptions = await listSubscriptions(env.ALERTS_KV);
+  if (!subscriptions.length) return { subscriptions: 0, locations: 0, sent: 0 };
+
+  // Una sola consulta CAP por ubicación única, aunque haya varios teléfonos suscriptos allí.
+  const locations = new Map();
+  for (const record of subscriptions) {
+    if (!validCoordinates(Number(record.lat), Number(record.lon)) || !validSubscription(record.subscription)) continue;
+    const key = Number(record.lat).toFixed(5) + ',' + Number(record.lon).toFixed(5);
+    if (!locations.has(key)) locations.set(key, { lat: Number(record.lat), lon: Number(record.lon), records: [] });
+    locations.get(key).records.push(record);
+  }
+
+  let sent = 0;
+  for (const location of locations.values()) {
+    const result = await getAlerts(location.lat, location.lon);
+    // No declarar ausencia de riesgo ni enviar avisos automáticos con catálogo incompleto.
+    if (!result.coverageComplete) {
+      console.warn('Push omitido: catálogo CAP incompleto', {
+        lat: location.lat, lon: location.lon,
+        found: result.feedItemsFound, downloaded: result.downloadedDocuments,
+        failed: result.failedDocuments, rateLimited: result.rateLimited,
+      });
+      continue;
+    }
+    const active = result.activeForLocation.filter(alert =>
+      alert.identifier && isEffectiveNow(alert) &&
+      String(alert.status || '').toLowerCase() !== 'cancel'
+    );
+    for (const record of location.records) {
+      for (const alert of active) {
+        try {
+          const outcome = await sendAlertPush(record, alert, env);
+          if (outcome.sent) sent++;
+        } catch (error) {
+          console.error('No se pudo enviar Push', record.id, alert.identifier, String(error));
+        }
+      }
+    }
+  }
+  return { subscriptions: subscriptions.length, locations: locations.size, sent };
+}
+
 async function officialRadar(q) {
   const viewer = 'https://www.smn.gob.ar/radar/responsiveFrame';
   if (q.resource === 'radar-snapshot') {
@@ -257,23 +441,45 @@ async function officialRadar(q) {
   }, 410);
 }
 
+
 export default {
   async fetch(request, env) {
-    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
-    if (request.method !== 'GET') return json({ error: 'Método no permitido.' }, 405);
     const url = new URL(request.url), q = Object.fromEntries(url.searchParams.entries());
+    if (request.method === 'OPTIONS') {
+      const origin = request.headers.get('Origin') || '';
+      const allowed = env.APP_ORIGIN && origin === env.APP_ORIGIN;
+      return new Response(null, { status: 204, headers: {
+        'Access-Control-Allow-Origin': allowed ? origin : 'null',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Vary': 'Origin',
+      }});
+    }
+
     try {
-      if (q.resource === 'health') return json({ ok: true, service: 'ClimaGo API', time: new Date().toISOString() }, 200, { 'Cache-Control': 'no-store' });
+      if (q.resource === 'push-public-key' && request.method === 'GET') {
+        if (!env.VAPID_SERVER_PUBLIC_KEY) return json({ error: 'La clave pública VAPID todavía no está configurada.' }, 503);
+        return jsonForOrigin({ publicKey: env.VAPID_SERVER_PUBLIC_KEY }, 200, request, env, { 'Cache-Control': 'public, max-age=3600' });
+      }
+      if (q.resource === 'subscribe' && request.method === 'POST') return await saveSubscription(request, env);
+      if (q.resource === 'unsubscribe' && request.method === 'POST') return await removeSubscription(request, env);
+      if (request.method !== 'GET') return json({ error: 'Método no permitido.' }, 405);
+
+      if (q.resource === 'health') return json({
+        ok: true, service: 'ClimaGo API', time: new Date().toISOString(),
+        pushStorageConfigured: Boolean(env.ALERTS_KV),
+        pushKeysConfigured: Boolean(env.VAPID_SERVER_PUBLIC_KEY && env.VAPID_SERVER_PRIVATE_KEY),
+      }, 200, { 'Cache-Control': 'no-store' });
+
       if (q.resource === 'alerts') {
         const lat = Number(q.lat), lon = Number(q.lon);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return json({ error: 'Coordenadas lat/lon inválidas.' }, 400);
+        if (!validCoordinates(lat, lon)) return json({ error: 'Coordenadas lat/lon inválidas.' }, 400);
         const data = await getAlerts(lat, lon);
         const dataStatus = data.coverageComplete ? 'ok' :
           data.rateLimited ? 'rate_limited' :
           data.status === 'unavailable' || data.status === 'index-without-xml-links' ? 'unavailable' : 'partial';
         const cap = {
-          ...data,
-          dataStatus,
+          ...data, dataStatus,
           diagnostics: {
             documentsFound: data.feedItemsFound || 0,
             documentsAttempted: data.attemptedDocuments || 0,
@@ -289,10 +495,22 @@ export default {
         });
       }
       if (q.resource === 'radar-snapshot' || q.resource === 'radar-tile') return await officialRadar(q);
-      return json({ error: 'Recurso no reconocido. Usá resource=health, alerts, radar-snapshot o radar-tile.' }, 404);
+      return json({ error: 'Recurso no reconocido. Usá resource=health, alerts, radar-snapshot, radar-tile o push-public-key.' }, 404);
     } catch (e) {
-      return json({ error: 'No se pudo completar la consulta meteorológica.', detail: String(e?.message || e) }, 502, { 'Cache-Control': 'no-store' });
+      console.error('ClimaGo Worker error:', e);
+      return json({ error: 'No se pudo completar la solicitud.', detail: String(e?.message || e) }, 502, { 'Cache-Control': 'no-store' });
+    }
+  },
+
+  async scheduled(controller, env) {
+    try {
+      const result = await runScheduledAlerts(env);
+      console.log('ClimaGo Push schedule completado:', JSON.stringify({
+        cron: controller.cron, scheduledTime: controller.scheduledTime, ...result,
+      }));
+    } catch (error) {
+      console.error('ClimaGo Push schedule falló:', String(error?.stack || error));
+      throw error;
     }
   },
 };
-// ClimaGo - primera compilación desde GitHub
