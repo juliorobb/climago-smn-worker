@@ -6,18 +6,15 @@ compatibility_date = "2026-11-02"
 [triggers]
 crons = ["*/10 * * * *"]
 
-# IMPORTANTE: crear primero el namespace:
-#   npx wrangler kv namespace create ALERTS_KV
-# Después descomentar el bloque y reemplazar el ID por el devuelto por Cloudflare.
-# [[kv_namespaces]]
-# binding = "ALERTS_KV"
-# id = "PEGAR_AQUI_EL_ID_REAL"
+[[kv_namespaces]]
+binding = "ALERTS_KV"
+id = "7bc92d39b46e4fb599d2ad8461d764e8"
 
 [vars]
 VAPID_SUBJECT = "mailto:soporte@climago.app"
 
 # APP_ORIGIN debe configurarse en Cloudflare como variable de entorno
-# con el origen exacto de la PWA publicada (por ejemplo, https://tu-dominio).
+# con el origen exacto de la PWA publicada.
 # VAPID_SERVER_PUBLIC_KEY debe configurarse como variable.
 # VAPID_SERVER_PRIVATE_KEY debe configurarse como Secret.
 # Nunca guardar claves privadas en este archivo.
