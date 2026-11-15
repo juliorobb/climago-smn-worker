@@ -285,8 +285,10 @@ function validSubscription(value) {
 }
 
 function isEffectiveNow(alert, now = Date.now()) {
-  const start = Date.parse(alert.effective || alert.onset || '');
-  return !Number.isFinite(start) || start <= now;
+  const rawStart = alert.effective || alert.onset || '';
+  const start = Date.parse(rawStart);
+  // Sin fecha de inicio verificable, no enviar Push por anticipado.
+  return Number.isFinite(start) && start <= now;
 }
 
 async function saveSubscription(request, env) {
@@ -310,6 +312,42 @@ async function saveSubscription(request, env) {
   };
   await env.ALERTS_KV.put(SUBSCRIPTION_PREFIX + id, JSON.stringify(record));
   return jsonForOrigin({ ok: true, id }, 201, request, env);
+}
+
+
+async function sendTestPush(request, env) {
+  if (!env.ALERTS_KV) return jsonForOrigin({ error: 'El almacenamiento de suscripciones no está configurado.' }, 503, request, env);
+  const origin = request.headers.get('Origin') || '';
+  if (!isAllowedAppOrigin(origin, env)) return jsonForOrigin({ error: 'Origen no autorizado.' }, 403, request, env);
+  let body;
+  try { body = await request.json(); } catch { return jsonForOrigin({ error: 'JSON inválido.' }, 400, request, env); }
+  if (typeof body?.endpoint !== 'string' || !body.endpoint.startsWith('https://')) return jsonForOrigin({ error: 'Endpoint de suscripción inválido.' }, 400, request, env);
+  const id = await sha256Hex(body.endpoint);
+  const raw = await env.ALERTS_KV.get(SUBSCRIPTION_PREFIX + id);
+  if (!raw) return jsonForOrigin({ error: 'No encontramos esta suscripción guardada. Volvé a activar las notificaciones.' }, 404, request, env);
+  let record;
+  try { record = JSON.parse(raw); } catch { return jsonForOrigin({ error: 'La suscripción guardada está dañada.' }, 500, request, env); }
+  const testKey = 'test:' + id;
+  const previous = Number(await env.ALERTS_KV.get(testKey) || 0);
+  if (Date.now() - previous < 60000) return jsonForOrigin({ error: 'Esperá un minuto antes de enviar otra prueba.' }, 429, request, env);
+  if (!env.VAPID_SERVER_PUBLIC_KEY || !env.VAPID_SERVER_PRIVATE_KEY) return jsonForOrigin({ error: 'Faltan las claves VAPID del Worker.' }, 503, request, env);
+  const { buildPushPayload } = await import('@block65/webcrypto-web-push');
+  const payload = await buildPushPayload({
+    data: JSON.stringify({ title: 'Prueba de notificación · ClimaGo', body: 'La conexión Push de este teléfono está funcionando correctamente.', tag: 'climago-push-test', url: '/?page=alerts' }),
+    options: { ttl: 120, urgency: 'high' },
+  }, record.subscription, {
+    subject: env.VAPID_SUBJECT || 'mailto:soporte@climago.app',
+    publicKey: env.VAPID_SERVER_PUBLIC_KEY,
+    privateKey: env.VAPID_SERVER_PRIVATE_KEY,
+  });
+  const response = await fetch(record.subscription.endpoint, payload);
+  if (response.status === 404 || response.status === 410) {
+    await env.ALERTS_KV.delete(SUBSCRIPTION_PREFIX + id);
+    return jsonForOrigin({ error: 'El servicio Push informó que la suscripción venció. Hay que registrarla nuevamente.' }, 410, request, env);
+  }
+  if (!response.ok) return jsonForOrigin({ error: 'El servicio Push respondió HTTP ' + response.status + '.' }, 502, request, env);
+  await env.ALERTS_KV.put(testKey, String(Date.now()), { expirationTtl: 300 });
+  return jsonForOrigin({ ok: true, status: response.status }, 200, request, env);
 }
 
 async function removeSubscription(request, env) {
@@ -473,6 +511,7 @@ export default {
       }
       if (q.resource === 'subscribe' && request.method === 'POST') return await saveSubscription(request, env);
       if (q.resource === 'unsubscribe' && request.method === 'POST') return await removeSubscription(request, env);
+      if (q.resource === 'push-test' && request.method === 'POST') return await sendTestPush(request, env);
       if (request.method !== 'GET') return json({ error: 'Método no permitido.' }, 405);
 
       if (q.resource === 'health') return json({
