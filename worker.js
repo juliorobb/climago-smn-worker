@@ -121,7 +121,9 @@ function parseCap(xml, lat, lon) {
       return { description: value(area, 'areaDesc'), affected, geometry };
     });
     out.push({
-      identifier: value(xml, 'identifier'), sender: value(xml, 'sender'), sent: value(xml, 'sent'), status: value(xml, 'status'),
+      identifier: value(xml, 'identifier'), sender: value(xml, 'sender'), sent: value(xml, 'sent'),
+      status: value(xml, 'status'), msgType: value(xml, 'msgType'), scope: value(xml, 'scope'),
+      references: value(xml, 'references'),
       event: value(info, 'event'), headline: value(info, 'headline'), description: value(info, 'description'),
       instruction: value(info, 'instruction'), severity: value(info, 'severity'), urgency: value(info, 'urgency'),
       certainty: value(info, 'certainty'), effective: value(info, 'effective'), onset: value(info, 'onset'), expires: value(info, 'expires'),
@@ -291,6 +293,31 @@ function isEffectiveNow(alert, now = Date.now()) {
   return Number.isFinite(start) && start <= now;
 }
 
+// Filtro conservador para Push: solo avisos públicos, reales, vigentes y de impacto.
+function isRelevantForPush(alert, now = Date.now()) {
+  const status = String(alert.status || '').toLowerCase();
+  const msgType = String(alert.msgType || '').toLowerCase();
+  const scope = String(alert.scope || '').toLowerCase();
+  const severity = String(alert.severity || '').toLowerCase();
+  const urgency = String(alert.urgency || '').toLowerCase();
+  const certainty = String(alert.certainty || '').toLowerCase();
+  const event = String(alert.event || '').toLowerCase();
+  const expires = Date.parse(alert.expires || '');
+
+  if (status !== 'actual' || !['alert', 'update'].includes(msgType) || scope !== 'public') return false;
+  if (!alert.identifier || !alert.affectsLocation || !isEffectiveNow(alert, now)) return false;
+  if (Number.isFinite(expires) && expires <= now) return false;
+  if (!['immediate', 'expected'].includes(urgency)) return false;
+  if (!['observed', 'likely', 'possible'].includes(certainty)) return false;
+
+  if (severity === 'extreme' || severity === 'severe') return true;
+  if (severity !== 'moderate') return false;
+
+  // Los avisos moderados solo pasan si describen un peligro meteorológico concreto.
+  const hazardousEvent = /torment|granizo|hail|wind|viento|heat|calor|cold|fr[ií]o|frost|helada|rain|lluvia|flood|inundaci[oó]n|snow|nieve|tornado|precipitaci[oó]n intensa/i.test(event);
+  return hazardousEvent && ['observed', 'likely'].includes(certainty);
+}
+
 async function saveSubscription(request, env) {
   if (!env.ALERTS_KV) return jsonForOrigin({ error: 'El almacenamiento de suscripciones no está configurado.' }, 503, request, env);
   const origin = request.headers.get('Origin') || '';
@@ -452,10 +479,7 @@ async function runScheduledAlerts(env) {
       });
       continue;
     }
-    const active = result.activeForLocation.filter(alert =>
-      alert.identifier && isEffectiveNow(alert) &&
-      String(alert.status || '').toLowerCase() !== 'cancel'
-    );
+    const active = result.activeForLocation.filter(alert => isRelevantForPush(alert));
     for (const record of location.records) {
       for (const alert of active) {
         try {
