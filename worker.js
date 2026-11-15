@@ -244,9 +244,19 @@ const SENT_PREFIX = 'sent:';
 const MAX_SUBSCRIPTIONS = 1000;
 const MAX_PUSH_HISTORY = 500;
 
+function isAllowedAppOrigin(origin, env) {
+  if (!origin) return false;
+  if (env.APP_ORIGIN && origin === env.APP_ORIGIN) return true;
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === 'https:' &&
+      (parsed.hostname === 'climago.pages.dev' || parsed.hostname.endsWith('.climago.pages.dev'));
+  } catch { return false; }
+}
+
 function jsonForOrigin(data, status, request, env, extra = {}) {
   const origin = request.headers.get('Origin') || '';
-  const allowed = env.APP_ORIGIN && origin === env.APP_ORIGIN;
+  const allowed = isAllowedAppOrigin(origin, env);
   return json(data, status, {
     ...extra,
     'Access-Control-Allow-Origin': allowed ? origin : 'null',
@@ -282,7 +292,7 @@ function isEffectiveNow(alert, now = Date.now()) {
 async function saveSubscription(request, env) {
   if (!env.ALERTS_KV) return jsonForOrigin({ error: 'El almacenamiento de suscripciones no está configurado.' }, 503, request, env);
   const origin = request.headers.get('Origin') || '';
-  if (!env.APP_ORIGIN || origin !== env.APP_ORIGIN) return jsonForOrigin({ error: 'Origen no autorizado.' }, 403, request, env);
+  if (!isAllowedAppOrigin(origin, env)) return jsonForOrigin({ error: 'Origen no autorizado.' }, 403, request, env);
   const length = Number(request.headers.get('Content-Length') || 0);
   if (length > 12000) return jsonForOrigin({ error: 'Solicitud demasiado grande.' }, 413, request, env);
   let body;
@@ -305,7 +315,7 @@ async function saveSubscription(request, env) {
 async function removeSubscription(request, env) {
   if (!env.ALERTS_KV) return jsonForOrigin({ error: 'El almacenamiento de suscripciones no está configurado.' }, 503, request, env);
   const origin = request.headers.get('Origin') || '';
-  if (!env.APP_ORIGIN || origin !== env.APP_ORIGIN) return jsonForOrigin({ error: 'Origen no autorizado.' }, 403, request, env);
+  if (!isAllowedAppOrigin(origin, env)) return jsonForOrigin({ error: 'Origen no autorizado.' }, 403, request, env);
   let body;
   try { body = await request.json(); } catch { return jsonForOrigin({ error: 'JSON inválido.' }, 400, request, env); }
   if (typeof body?.endpoint !== 'string' || !body.endpoint.startsWith('https://')) {
@@ -447,7 +457,7 @@ export default {
     const url = new URL(request.url), q = Object.fromEntries(url.searchParams.entries());
     if (request.method === 'OPTIONS') {
       const origin = request.headers.get('Origin') || '';
-      const allowed = env.APP_ORIGIN && origin === env.APP_ORIGIN;
+      const allowed = isAllowedAppOrigin(origin, env);
       return new Response(null, { status: 204, headers: {
         'Access-Control-Allow-Origin': allowed ? origin : 'null',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
