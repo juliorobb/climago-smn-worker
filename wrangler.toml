@@ -14,12 +14,16 @@ id = "7bc92d39b46e4fb599d2ad8461d764e8"
 [vars]
 VAPID_SUBJECT = "mailto:soporte@climago.app"
 
-# APP_ORIGIN y las claves VAPID se configuran como variables/secretos
-# directamente en Cloudflare. Nunca guardar la clave privada aquí.
-
 # Recursos aislados para Worker Previews (ramas y pull requests).
 [previews]
 
 [[previews.kv_namespaces]]
 binding = "ALERTS_KV"
 id = "35f76904acef44939272005cd8ad67d2"
+
+# Variables públicas necesarias para el Worker de vista previa.
+[previews.vars]
+APP_ORIGIN = "https://4a9d759f.climago.pages.dev"
+VAPID_SERVER_PUBLIC_KEY = "BHzKD_mHLJEHCfF6vFX2LDcfkS4h1nQ7sMqIr9EPpKCKRzd04EYaPjexVZXAjyzviqacbSDjjAuToxM0gD_dZws"
+
+# La clave privada VAPID permanece como secreto en Cloudflare.
