@@ -85,5 +85,5 @@ test('parsea un documento CAP XML y conserva parámetros SAT explícitos', () =>
   assert.equal(alert.parameters[0].value, 'Naranja');
   assert.equal(alert.affectsLocation, true);
   assert.equal(getAlertLevel(alert), 'naranja');
-  assert.equal(isRelevantForPush(alert, Date.parse('2026-11-16T11:00:00-03:00')), true);
+  assert.equal(isRelevantForPush(alert, Date.parse('2026-11-16T11:00:00-03:00')), true, JSON.stringify(alert));
 });
