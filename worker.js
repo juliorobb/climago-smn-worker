@@ -127,6 +127,12 @@ function parseCap(xml, lat, lon) {
       event: value(info, 'event'), headline: value(info, 'headline'), description: value(info, 'description'),
       instruction: value(info, 'instruction'), severity: value(info, 'severity'), urgency: value(info, 'urgency'),
       certainty: value(info, 'certainty'), effective: value(info, 'effective'), onset: value(info, 'onset'), expires: value(info, 'expires'),
+      // CAP permite parámetros adicionales del emisor. Solo aceptamos color si el
+      // propio parámetro identifica inequívocamente nivel/color de alerta.
+      parameters: blocks(info, 'parameter').map(parameter => ({
+        name: value(parameter, 'valueName'),
+        value: value(parameter, 'value'),
+      })),
       areas, affectsLocation: areas.some(a => a.affected), source: 'Servicio Meteorológico Nacional',
     });
   }
@@ -305,16 +311,30 @@ function isEffectiveNow(alert, now = Date.now()) {
 // Nivel interno ClimaGo: prevalece el color SAT explícito del SMN.
 // Si no está escrito, se usa una equivalencia conservadora con CAP severity.
 export function getAlertLevel(alert) {
-  const text = [alert.headline, alert.event, alert.description].filter(Boolean).join(' ').toLowerCase();
-  const explicit = text.match(/(?:alerta|nivel)\s+(rojo|roja|naranja|amarillo|amarilla)/i);
-  if (explicit) {
-    const color = explicit[1].toLowerCase();
-    return color.startsWith('roj') ? 'rojo' : color.startsWith('amarill') ? 'amarillo' : 'naranja';
+  const colorMap = value => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (/^(amarillo|amarilla|yellow)$/.test(normalized)) return 'amarillo';
+    if (/^(naranja|orange)$/.test(normalized)) return 'naranja';
+    if (/^(rojo|roja|red)$/.test(normalized)) return 'rojo';
+    if (/^(verde|green)$/.test(normalized)) return 'verde';
+    return null;
+  };
+
+  // Primera opción: parámetro CAP del emisor cuyo nombre declara explícitamente
+  // que contiene el color o nivel SAT. No inferimos colores desde CAP severity.
+  for (const parameter of (Array.isArray(alert.parameters) ? alert.parameters : [])) {
+    if (!/(color|colour|nivel|level|alerta|alert)/i.test(String(parameter.name || ''))) continue;
+    const color = colorMap(parameter.value);
+    if (color) return color;
   }
-  const severity = String(alert.severity || '').toLowerCase();
-  if (severity === 'extreme') return 'rojo';
-  if (severity === 'severe') return 'naranja';
-  if (severity === 'moderate' || severity === 'minor') return 'amarillo';
+
+  // Segunda opción: color escrito explícitamente como nivel en texto oficial.
+  const text = [alert.headline, alert.event, alert.description].filter(Boolean).join(' ');
+  const explicit = text.match(/(?:alerta|nivel)\\s+(rojo|roja|naranja|amarillo|amarilla|verde)/i);
+  if (explicit) return colorMap(explicit[1]);
+
+  // CAP severity (Extreme/Severe/Moderate/Minor) no equivale por sí solo
+  // al semáforo SAT del SMN. Si el color no está documentado, queda desconocido.
   return 'desconocido';
 }
 
