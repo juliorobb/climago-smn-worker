@@ -210,10 +210,19 @@ async function getAlerts(lat, lon) {
   }
 
   const now = Date.now();
+  // Los mensajes CAP Cancel contienen referencias al aviso original.
+  // Se eliminan del conjunto activo los identificadores cancelados, aunque el
+  // documento original siga apareciendo temporalmente en el índice del SMN.
+  const cancelledIdentifiers = new Set(
+    results.filter(a => String(a.msgType || '').toLowerCase() === 'cancel')
+      .flatMap(a => referencedIdentifiers(a.references))
+  );
   const active = results.filter(a =>
     a.identifier &&
-    (!a.expires || (Number.isFinite(Date.parse(a.expires)) && Date.parse(a.expires) >= now)) &&
-    a.status.toLowerCase() !== 'cancel'
+    String(a.status || '').toLowerCase() === 'actual' &&
+    String(a.msgType || '').toLowerCase() !== 'cancel' &&
+    !cancelledIdentifiers.has(a.identifier) &&
+    (!a.expires || (Number.isFinite(Date.parse(a.expires)) && Date.parse(a.expires) >= now))
   );
   const unique = [...new Map(active.map(a => [a.identifier, a])).values()];
   unique.sort((a, b) => Number(b.affectsLocation) - Number(a.affectsLocation));
@@ -293,29 +302,39 @@ function isEffectiveNow(alert, now = Date.now()) {
   return Number.isFinite(start) && start <= now;
 }
 
-// Filtro conservador para Push: solo avisos públicos, reales, vigentes y de impacto.
+// Nivel interno ClimaGo: prevalece el color SAT explícito del SMN.
+// Si no está escrito, se usa una equivalencia conservadora con CAP severity.
+function getAlertLevel(alert) {
+  const text = [alert.headline, alert.event, alert.description].filter(Boolean).join(' ').toLowerCase();
+  const explicit = text.match(/(?:alerta|nivel)\\s+(rojo|naranja|amarillo)/i);
+  if (explicit) return explicit[1].toLowerCase();
+  const severity = String(alert.severity || '').toLowerCase();
+  if (severity === 'extreme') return 'rojo';
+  if (severity === 'severe') return 'naranja';
+  if (severity === 'moderate' || severity === 'minor') return 'amarillo';
+  return 'desconocido';
+}
+
+function referencedIdentifiers(references) {
+  return String(references || '').trim().split(/\\s+/).filter(Boolean)
+    .map(item => item.split(',')[1] || '').filter(Boolean);
+}
+
+// Solo Naranja/Rojo generan Push. Amarillo permanece visible dentro de ClimaGo.
 function isRelevantForPush(alert, now = Date.now()) {
   const status = String(alert.status || '').toLowerCase();
   const msgType = String(alert.msgType || '').toLowerCase();
   const scope = String(alert.scope || '').toLowerCase();
-  const severity = String(alert.severity || '').toLowerCase();
   const urgency = String(alert.urgency || '').toLowerCase();
   const certainty = String(alert.certainty || '').toLowerCase();
-  const event = String(alert.event || '').toLowerCase();
   const expires = Date.parse(alert.expires || '');
 
   if (status !== 'actual' || !['alert', 'update'].includes(msgType) || scope !== 'public') return false;
   if (!alert.identifier || !alert.affectsLocation || !isEffectiveNow(alert, now)) return false;
   if (Number.isFinite(expires) && expires <= now) return false;
   if (!['immediate', 'expected'].includes(urgency)) return false;
-  if (!['observed', 'likely', 'possible'].includes(certainty)) return false;
-
-  if (severity === 'extreme' || severity === 'severe') return true;
-  if (severity !== 'moderate') return false;
-
-  // Los avisos moderados solo pasan si describen un peligro meteorológico concreto.
-  const hazardousEvent = /torment|granizo|hail|wind|viento|heat|calor|cold|fr[ií]o|frost|helada|rain|lluvia|flood|inundaci[oó]n|snow|nieve|tornado|precipitaci[oó]n intensa/i.test(event);
-  return hazardousEvent && ['observed', 'likely'].includes(certainty);
+  if (!['observed', 'likely'].includes(certainty)) return false;
+  return ['naranja', 'rojo'].includes(getAlertLevel(alert));
 }
 
 async function saveSubscription(request, env) {
