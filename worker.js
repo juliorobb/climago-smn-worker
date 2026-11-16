@@ -330,7 +330,7 @@ export function getAlertLevel(alert) {
 
   // Segunda opción: color escrito explícitamente como nivel en texto oficial.
   const text = [alert.headline, alert.event, alert.description].filter(Boolean).join(' ');
-  const explicit = text.match(/(?:alerta|nivel)\\s+(rojo|roja|naranja|amarillo|amarilla|verde)/i);
+  const explicit = text.match(/(?:alerta|nivel)\s+(rojo|roja|naranja|amarillo|amarilla|verde)/i);
   if (explicit) return colorMap(explicit[1]);
 
   // CAP severity (Extreme/Severe/Moderate/Minor) no equivale por sí solo
