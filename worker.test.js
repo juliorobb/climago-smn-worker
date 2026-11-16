@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getAlertLevel, isRelevantForPush, referencedIdentifiers } from './worker.js';
+import { getAlertLevel, isRelevantForPush, referencedIdentifiers, parseCap } from './worker.js';
 
 const NOW = Date.parse('2026-11-15T15:00:00Z');
 const base = {
@@ -60,4 +60,30 @@ test('extrae identificadores de referencias CAP', () => {
     referencedIdentifiers('smn.gov.ar,alerta-antigua,2026-11-15T13:00:00Z smn.gov.ar,otra-alerta,2026-11-15T13:10:00Z'),
     ['alerta-antigua', 'otra-alerta']
   );
+});
+
+test('parsea un documento CAP XML y conserva parámetros SAT explícitos', () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+  <alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+    <identifier>smn-test-001</identifier><sender>smn.gob.ar</sender>
+    <sent>2026-11-16T10:00:00-03:00</sent><status>Actual</status>
+    <msgType>Alert</msgType><scope>Public</scope>
+    <info><event>Tormentas</event><headline>Alerta naranja por tormentas</headline>
+      <description>Tormentas fuertes.</description><severity>Severe</severity>
+      <urgency>Immediate</urgency><certainty>Likely</certainty>
+      <effective>2026-11-16T10:00:00-03:00</effective>
+      <expires>2026-11-16T14:00:00-03:00</expires>
+      <parameter><valueName>SAT_COLOR</valueName><value>Naranja</value></parameter>
+      <area><areaDesc>Córdoba</areaDesc><circle>-31.42,-64.18 25</circle></area>
+    </info>
+  </alert>`;
+  const [alert] = parseCap(xml, -31.42, -64.18);
+  assert.equal(alert.identifier, 'smn-test-001');
+  assert.equal(alert.status, 'Actual');
+  assert.equal(alert.msgType, 'Alert');
+  assert.equal(alert.parameters[0].name, 'SAT_COLOR');
+  assert.equal(alert.parameters[0].value, 'Naranja');
+  assert.equal(alert.affectsLocation, true);
+  assert.equal(getAlertLevel(alert), 'naranja');
+  assert.equal(isRelevantForPush(alert, Date.parse('2026-11-16T11:00:00-03:00')), true);
 });
