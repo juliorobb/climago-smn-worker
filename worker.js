@@ -85,7 +85,7 @@ function circleRing(lon, lat, radiusKm, steps = 48) {
   }
   return points;
 }
-function parseCap(xml, lat, lon) {
+export function parseCap(xml, lat, lon) {
   const infos = blocks(xml, 'info');
   const out = [];
   for (const info of (infos.length ? infos : [xml])) {
