@@ -10,12 +10,27 @@ const base = {
   certainty: 'Likely', severity: 'Severe', headline: 'Tormentas fuertes',
 };
 
-test('CAP Severe se clasifica Naranja y puede generar Push', () => {
-  assert.equal(getAlertLevel(base), 'naranja');
-  assert.equal(isRelevantForPush(base, NOW), true);
+test('CAP Severe sin color SAT explícito queda desconocido y no genera Push', () => {
+  assert.equal(getAlertLevel(base), 'desconocido');
+  assert.equal(isRelevantForPush(base, NOW), false);
 });
-test('CAP Extreme se clasifica Rojo y puede generar Push', () => {
+test('un parámetro CAP explícito fija el color naranja y habilita Push', () => {
+  const alert = { ...base, parameters: [{ name: 'SAT_COLOR', value: 'Naranja' }] };
+  assert.equal(getAlertLevel(alert), 'naranja');
+  assert.equal(isRelevantForPush(alert, NOW), true);
+});
+test('un parámetro CAP explícito amarillo prevalece sobre CAP Severe', () => {
+  const alert = { ...base, parameters: [{ name: 'SAT_NIVEL', value: 'Amarillo' }] };
+  assert.equal(getAlertLevel(alert), 'amarillo');
+  assert.equal(isRelevantForPush(alert, NOW), false);
+});
+test('CAP Extreme sin color SAT explícito queda desconocido', () => {
   const alert = { ...base, severity: 'Extreme' };
+  assert.equal(getAlertLevel(alert), 'desconocido');
+  assert.equal(isRelevantForPush(alert, NOW), false);
+});
+test('un nivel rojo explícito en el texto oficial permite Push', () => {
+  const alert = { ...base, headline: 'Alerta roja por tormentas' };
   assert.equal(getAlertLevel(alert), 'rojo');
   assert.equal(isRelevantForPush(alert, NOW), true);
 });
