@@ -306,8 +306,11 @@ function isEffectiveNow(alert, now = Date.now()) {
 // Si no está escrito, se usa una equivalencia conservadora con CAP severity.
 export function getAlertLevel(alert) {
   const text = [alert.headline, alert.event, alert.description].filter(Boolean).join(' ').toLowerCase();
-  const explicit = text.match(/(?:alerta|nivel)\s+(rojo|naranja|amarillo)/i);
-  if (explicit) return explicit[1].toLowerCase();
+  const explicit = text.match(/(?:alerta|nivel)\s+(rojo|roja|naranja|amarillo|amarilla)/i);
+  if (explicit) {
+    const color = explicit[1].toLowerCase();
+    return color.startsWith('roj') ? 'rojo' : color.startsWith('amarill') ? 'amarillo' : 'naranja';
+  }
   const severity = String(alert.severity || '').toLowerCase();
   if (severity === 'extreme') return 'rojo';
   if (severity === 'severe') return 'naranja';
