@@ -304,7 +304,7 @@ function isEffectiveNow(alert, now = Date.now()) {
 
 // Nivel interno ClimaGo: prevalece el color SAT explícito del SMN.
 // Si no está escrito, se usa una equivalencia conservadora con CAP severity.
-function getAlertLevel(alert) {
+export function getAlertLevel(alert) {
   const text = [alert.headline, alert.event, alert.description].filter(Boolean).join(' ').toLowerCase();
   const explicit = text.match(/(?:alerta|nivel)\s+(rojo|naranja|amarillo)/i);
   if (explicit) return explicit[1].toLowerCase();
@@ -315,13 +315,13 @@ function getAlertLevel(alert) {
   return 'desconocido';
 }
 
-function referencedIdentifiers(references) {
+export function referencedIdentifiers(references) {
   return String(references || '').trim().split(/\s+/).filter(Boolean)
     .map(item => item.split(',')[1] || '').filter(Boolean);
 }
 
 // Solo Naranja/Rojo generan Push. Amarillo permanece visible dentro de ClimaGo.
-function isRelevantForPush(alert, now = Date.now()) {
+export function isRelevantForPush(alert, now = Date.now()) {
   const status = String(alert.status || '').toLowerCase();
   const msgType = String(alert.msgType || '').toLowerCase();
   const scope = String(alert.scope || '').toLowerCase();
