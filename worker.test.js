@@ -39,9 +39,9 @@ test('el color amarillo explícito prevalece y no genera Push', () => {
   assert.equal(getAlertLevel(alert), 'amarillo');
   assert.equal(isRelevantForPush(alert, NOW), false);
 });
-test('CAP Moderate queda amarillo y no genera Push', () => {
+test('CAP Moderate sin color SAT explícito queda desconocido y no genera Push', () => {
   const alert = { ...base, severity: 'Moderate' };
-  assert.equal(getAlertLevel(alert), 'amarillo');
+  assert.equal(getAlertLevel(alert), 'desconocido');
   assert.equal(isRelevantForPush(alert, NOW), false);
 });
 test('no envía avisos fuera de la ubicación', () => {
