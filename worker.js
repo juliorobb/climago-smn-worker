@@ -19,12 +19,12 @@ const decodeXml = (s) => s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
   .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
   .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
 function value(xml, tag) {
-  const re = new RegExp(`<(?:[\\w.-]+:)?${tag}(?:\s[^>]*)?>([\s\\S]*?)<\\/(?:[\\w.-]+:)?${tag}\s*>`, 'i');
+  const re = new RegExp(`<(?:[\\w.-]+:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?${tag}\\s*>`, 'i');
   const m = xml.match(re);
   return m ? decodeXml(m[1]).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '';
 }
 function blocks(xml, tag) {
-  const re = new RegExp(`<(?:[\\w.-]+:)?${tag}(?:\s[^>]*)?>([\s\\S]*?)<\\/(?:[\\w.-]+:)?${tag}\s*>`, 'gi');
+  const re = new RegExp(`<(?:[\\w.-]+:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?${tag}\\s*>`, 'gi');
   return [...xml.matchAll(re)].map(m => m[1]);
 }
 function extractCapUrls(feed) {
