@@ -302,10 +302,11 @@ function validSubscription(value) {
 }
 
 function isEffectiveNow(alert, now = Date.now()) {
-  const rawStart = alert.effective || alert.onset || '';
-  const start = Date.parse(rawStart);
-  // Sin fecha de inicio verificable, no enviar Push por anticipado.
-  return Number.isFinite(start) && start <= now;
+  const starts = [alert.effective, alert.onset]
+    .map(value => value ? Date.parse(value) : NaN)
+    .filter(Number.isFinite);
+  // CAP effective y onset pueden diferir: el aviso no comienza hasta la fecha más tardía.
+  return starts.length > 0 && Math.max(...starts) <= now;
 }
 
 // Nivel interno ClimaGo: prevalece el color SAT explícito del SMN.
@@ -354,7 +355,7 @@ export function isRelevantForPush(alert, now = Date.now()) {
 
   if (status !== 'actual' || !['alert', 'update'].includes(msgType) || scope !== 'public') return false;
   if (!alert.identifier || !alert.affectsLocation || !isEffectiveNow(alert, now)) return false;
-  if (Number.isFinite(expires) && expires <= now) return false;
+  if (!Number.isFinite(expires) || expires <= now) return false;
   if (!['immediate', 'expected'].includes(urgency)) return false;
   if (!['observed', 'likely'].includes(certainty)) return false;
   return ['naranja', 'rojo'].includes(getAlertLevel(alert));
