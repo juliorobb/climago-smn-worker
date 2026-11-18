@@ -1,10 +1,29 @@
-name = "climago-smn"
+name = "push-notifications-infra-climago-smn"
 main = "worker.js"
 compatibility_date = "2026-11-02"
 
-# No agregar claves privadas aquí.
-# Si más adelante se habilita Rainbow, RAINBOW_API_KEY debe configurarse
-# como Secret desde el panel de Cloudflare, nunca dentro de este archivo.
+# Cron: consulta avisos CAP cada 10 minutos (Cloudflare ejecuta cron en UTC).
+[triggers]
+crons = ["*/10 * * * *"]
 
-# Habilita el comando npx wrangler preview usado por Cloudflare Workers Builds.
+# Almacenamiento de producción.
+[[kv_namespaces]]
+binding = "ALERTS_KV"
+id = "7bc92d39b46e4fb599d2ad8461d764e8"
+
+[vars]
+VAPID_SUBJECT = "mailto:soporte@climago.app"
+
+# Recursos aislados para Worker Previews (ramas y pull requests).
 [previews]
+
+[[previews.kv_namespaces]]
+binding = "ALERTS_KV"
+id = "35f76904acef44939272005cd8ad67d2"
+
+# Variables públicas necesarias para el Worker de vista previa.
+[previews.vars]
+APP_ORIGIN = "https://4a9d759f.climago.pages.dev"
+VAPID_SERVER_PUBLIC_KEY = "BHzKD_mHLJEHCfF6vFX2LDcfkS4h1nQ7sMqIr9EPpKCKRzd04EYaPjexVZXAjyzviqacbSDjjAuToxM0gD_dZws"
+
+# La clave privada VAPID permanece como secreto en Cloudflare.
