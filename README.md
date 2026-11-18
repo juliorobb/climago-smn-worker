@@ -4,17 +4,18 @@ Worker de ClimaGo para consultas oficiales del SMN (CAP), radar oficial y notifi
 
 ## Recursos Cloudflare necesarios para activar Push
 
-1. Crear un namespace KV:
-   `npx wrangler kv namespace create ALERTS_KV`
-2. Copiar el ID devuelto en `wrangler.toml`, descomentando el bloque `[[kv_namespaces]]`.
-3. En el Worker, configurar estas variables:
-   - `APP_ORIGIN`: origen exacto de la PWA publicada, sin barra final.
-   - `VAPID_SERVER_PUBLIC_KEY`: clave pública VAPID correspondiente a la privada.
-   - `VAPID_SUBJECT`: contacto VAPID; el proyecto propone `mailto:soporte@climago.app`, que debe reemplazarse por un contacto válido del propietario.
-4. Cargar `VAPID_SERVER_PRIVATE_KEY` como Secret, nunca como variable pública ni dentro de Git:
+1. `wrangler.toml` ya declara los bindings KV de producción y vista previa. Antes de desplegar, confirmar en Cloudflare que los IDs configurados existen y pertenecen a este proyecto; no crear ni reemplazar namespaces a ciegas.
+2. En el entorno de producción del Worker, configurar:
+   - `APP_ORIGIN`: origen canónico exacto de la PWA publicada, sin barra final.
+   - `VAPID_SERVER_PUBLIC_KEY`: clave pública correspondiente a la privada.
+   - `VAPID_SUBJECT`: contacto VAPID válido del propietario.
+3. Cargar `VAPID_SERVER_PRIVATE_KEY` como Secret, nunca como variable pública ni dentro de Git:
    `npx wrangler secret put VAPID_SERVER_PRIVATE_KEY`
-5. Instalar dependencias y desplegar:
+4. Instalar dependencias y validar:
    `npm install`
+   `npm run check`
+   `npx wrangler deploy --dry-run`
+5. Desplegar solo después de confirmar los bindings, el origen y ambas claves VAPID:
    `npx wrangler deploy`
 
 El Cron Trigger configurado ejecuta `scheduled()` cada 10 minutos (UTC). El proceso agrupa suscripciones por coordenadas, consulta el catálogo CAP, y solo envía avisos cuando la descarga de todos los documentos descubiertos fue completa. Un endpoint 404/410 elimina la suscripción vencida. Los identificadores de avisos enviados se conservan en KV para evitar duplicados.
@@ -32,4 +33,4 @@ Las rutas de suscripción requieren el encabezado `Origin` igual a `APP_ORIGIN`.
 
 ## Alcance actual
 
-Este repositorio prepara el backend. La PWA todavía debe pedir permiso, ejecutar `PushManager.subscribe()`, enviar la suscripción y mostrar los eventos `push` en su Service Worker. Hasta completar esa parte no se puede hacer una prueba de entrega a un teléfono.
+La integración de la PWA para pedir permiso, ejecutar `PushManager.subscribe()`, registrar la suscripción y mostrar eventos `push` está implementada en la rama de validación del repositorio `juliorobb/Climago`, PR #14. Ambos PR siguen sin fusionar. La entrega real a un teléfono continúa pendiente hasta desplegar el Worker con sus variables y secretos correctos y completar una prueba de extremo a extremo en Android.
