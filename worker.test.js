@@ -87,3 +87,17 @@ test('parsea un documento CAP XML y conserva parámetros SAT explícitos', () =>
   assert.equal(getAlertLevel(alert), 'naranja');
   assert.equal(isRelevantForPush(alert, Date.parse('2026-11-16T11:00:00-03:00')), true, JSON.stringify(alert));
 });
+
+test('no envía Push hasta la fecha más tardía entre effective y onset', () => {
+  const alert = {
+    ...base,
+    effective: '2026-11-15T14:00:00Z',
+    onset: '2026-11-15T15:30:00Z',
+  };
+  assert.equal(isRelevantForPush(alert, Date.parse('2026-11-15T15:00:00Z')), false);
+  assert.equal(isRelevantForPush(alert, Date.parse('2026-11-15T15:30:00Z')), true);
+});
+test('no envía Push si CAP no informa vencimiento verificable', () => {
+  const { expires, ...withoutExpiry } = base;
+  assert.equal(isRelevantForPush(withoutExpiry, NOW), false);
+});
