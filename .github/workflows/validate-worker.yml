@@ -2,9 +2,9 @@ name: Validate ClimaGo Worker
 
 on:
   push:
-    branches: [push-notifications-infra]
+    branches: [push-notifications-infra, integration/worker-cap-lifecycle]
   pull_request:
-    branches: [main]
+    branches: [main, push-notifications-infra]
 
 jobs:
   validate:
