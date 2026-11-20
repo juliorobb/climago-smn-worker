@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getAlertLevel, isRelevantForPush, referencedIdentifiers, parseCap } from './worker.js';
+import { getAlertLevel, isRelevantForPush, referencedIdentifiers, currentCapAlerts, parseCap } from './worker.js';
 
 const NOW = Date.parse('2026-11-15T15:00:00Z');
 const base = {
@@ -101,4 +101,27 @@ test('no envía Push hasta la fecha más tardía entre effective y onset', () =>
 test('no envía Push si CAP no informa vencimiento verificable', () => {
   const { expires, ...withoutExpiry } = base;
   assert.equal(isRelevantForPush(withoutExpiry, NOW), false);
+});
+
+test('CAP Update supersedes the referenced previous alert before Push selection', () => {
+  const previous = { ...base, identifier: 'old-alert', msgType: 'Alert' };
+  const update = {
+    ...base,
+    identifier: 'updated-alert',
+    msgType: 'Update',
+    references: 'smn.gob.ar,old-alert,2026-11-15T13:00:00Z',
+  };
+  const current = currentCapAlerts([previous, update], NOW);
+  assert.deepEqual(current.map(alert => alert.identifier), ['updated-alert']);
+});
+test('CAP Cancel removes the referenced alert from the active set', () => {
+  const previous = { ...base, identifier: 'old-alert', msgType: 'Alert' };
+  const cancel = {
+    identifier: 'cancel-alert',
+    status: 'Actual',
+    msgType: 'Cancel',
+    scope: 'Public',
+    references: 'smn.gob.ar,old-alert,2026-11-15T13:00:00Z',
+  };
+  assert.deepEqual(currentCapAlerts([previous, cancel], NOW), []);
 });
