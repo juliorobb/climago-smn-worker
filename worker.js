@@ -219,19 +219,7 @@ async function getAlerts(lat, lon) {
   // Los mensajes CAP Cancel contienen referencias al aviso original.
   // Se eliminan del conjunto activo los identificadores cancelados, aunque el
   // documento original siga apareciendo temporalmente en el índice del SMN.
-  const cancelledIdentifiers = new Set(
-    results.filter(a => String(a.msgType || '').toLowerCase() === 'cancel')
-      .flatMap(a => referencedIdentifiers(a.references))
-  );
-  const active = results.filter(a =>
-    a.identifier &&
-    String(a.status || '').toLowerCase() === 'actual' &&
-    String(a.msgType || '').toLowerCase() !== 'cancel' &&
-    !cancelledIdentifiers.has(a.identifier) &&
-    (!a.expires || (Number.isFinite(Date.parse(a.expires)) && Date.parse(a.expires) >= now))
-  );
-  const unique = [...new Map(active.map(a => [a.identifier, a])).values()];
-  unique.sort((a, b) => Number(b.affectsLocation) - Number(a.affectsLocation));
+  const unique = currentCapAlerts(results, now);
 
   const coverageComplete = attemptedDocuments === urls.length &&
     downloadedDocuments === urls.length &&
@@ -342,6 +330,34 @@ export function getAlertLevel(alert) {
 export function referencedIdentifiers(references) {
   return String(references || '').trim().split(/\s+/).filter(Boolean)
     .map(item => item.split(',')[1] || '').filter(Boolean);
+}
+
+
+export function currentCapAlerts(records, now = Date.now()) {
+  const list = Array.isArray(records) ? records : [];
+  const cancelledIdentifiers = new Set(
+    list.filter(alert => String(alert.msgType || '').toLowerCase() === 'cancel')
+      .flatMap(alert => referencedIdentifiers(alert.references))
+  );
+  const updatedIdentifiers = new Set(
+    list.filter(alert => String(alert.msgType || '').toLowerCase() === 'update')
+      .flatMap(alert => referencedIdentifiers(alert.references))
+  );
+  const active = list.filter(alert => {
+    const identifier = alert.identifier;
+    const messageType = String(alert.msgType || '').toLowerCase();
+    const status = String(alert.status || '').toLowerCase();
+    const expiry = alert.expires ? Date.parse(alert.expires) : NaN;
+    return Boolean(identifier) &&
+      status === 'actual' &&
+      messageType !== 'cancel' &&
+      !cancelledIdentifiers.has(identifier) &&
+      !updatedIdentifiers.has(identifier) &&
+      (!alert.expires || (Number.isFinite(expiry) && expiry >= now));
+  });
+  const unique = [...new Map(active.map(alert => [alert.identifier, alert])).values()];
+  unique.sort((a, b) => Number(b.affectsLocation) - Number(a.affectsLocation));
+  return unique;
 }
 
 // Solo Naranja/Rojo generan Push. Amarillo permanece visible dentro de ClimaGo.
